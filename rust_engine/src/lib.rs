@@ -1,13 +1,15 @@
-//! Trading Engine - High-performance Rust extension for KrakenCryptoX
+//! Trading Engine - High-performance Rust extension for LimogiAICryptoX
 //!
 //! This module provides Python bindings via PyO3 for:
 //! - Real-time order book streaming via WebSocket
 //! - In-memory order book cache
-//! - Parallel arbitrage scanning
+//! - Parallel arbitrage opportunity scanning
 //! - Slippage calculation
-//! - Single balance pool paper trading
+//! - Order book health monitoring
+//!
+//! All trade execution is handled by the Python live trading system.
 
-mod balance_manager;
+mod config_manager;
 mod dispatcher;
 mod order_book;
 mod scanner;
@@ -15,10 +17,10 @@ mod slippage;
 mod types;
 mod websocket;
 
-use crate::balance_manager::BalanceManager;
+use crate::config_manager::ConfigManager;
 use crate::dispatcher::Dispatcher;
 use crate::order_book::OrderBookCache;
-use crate::types::{EngineConfig, EngineStats, EngineSettings, Opportunity, OrderBookHealth, TradingState, SlippageResult, TradeResult};
+use crate::types::{EngineConfig, EngineStats, EngineSettings, Opportunity, OrderBookHealth, SlippageResult};
 use crate::websocket::KrakenWebSocket;
 
 use parking_lot::RwLock;
@@ -36,7 +38,7 @@ use tracing_subscriber::FmtSubscriber;
 pub struct TradingEngine {
     cache: Arc<OrderBookCache>,
     websocket: Arc<RwLock<Option<KrakenWebSocket>>>,
-    balance_manager: Arc<BalanceManager>,
+    config_manager: Arc<ConfigManager>,
     dispatcher: Arc<Dispatcher>,
     runtime: Arc<Runtime>,
     
@@ -54,20 +56,12 @@ impl TradingEngine {
     /// Create a new trading engine
     #[new]
     #[pyo3(signature = (
-        initial_balance=100.0,
-        trade_amount=10.0,
         min_profit_threshold=0.0005,
-        cooldown_ms=5000,
-        max_trades_per_cycle=5,
         fee_rate=0.0026,
-        max_pairs=200
+        max_pairs=300
     ))]
     fn new(
-        initial_balance: f64,
-        trade_amount: f64,
         min_profit_threshold: f64,
-        cooldown_ms: u64,
-        max_trades_per_cycle: usize,
         fee_rate: f64,
         max_pairs: usize,
     ) -> PyResult<Self> {
@@ -78,54 +72,40 @@ impl TradingEngine {
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
         
-        info!("Initializing TradingEngine v2.0...");
+        info!("Initializing TradingEngine (Live Trading Mode)...");
         
         let config = EngineConfig {
-            trade_amount,
             min_profit_threshold,
-            cooldown_ms,
-            max_trades_per_cycle,
-            // Kill switch defaults - 30% from PEAK balance, NO auto-reset
-            kill_switch_enabled: true,
-            max_loss_pct: 0.30,            // Stop at 30% loss from peak
-            max_consecutive_losses: 10,     // Stop after 10 consecutive losses
-            max_daily_loss_pct: 0.30,       // Stop at 30% daily loss from peak
-            // Runtime-changeable engine settings
+            fee_rate,
             scan_interval_ms: 10000,        // 10 seconds default
             orderbook_depth: 25,
             max_pairs,
-            scanner_enabled: true,          // Scanner ON by default
-            // Fixed settings
-            initial_balance,
-            path_cooldown_ms: 3000,
-            fee_rate,
-            latency_penalty_pct: 0.001,     // 0.10% per leg default
+            scanner_enabled: true,
             staleness_warn_ms: 100,
             staleness_buffer_ms: 250,
             staleness_reject_ms: 1000,
         };
         
         let cache = Arc::new(OrderBookCache::new());
-        let balance_manager = Arc::new(BalanceManager::new(config.clone()));
+        let config_manager = Arc::new(ConfigManager::new(config.clone()));
         let dispatcher = Arc::new(Dispatcher::new(
             Arc::clone(&cache),
-            Arc::clone(&balance_manager),
+            Arc::clone(&config_manager),
         ));
         
         let runtime = Runtime::new()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
         
         info!(
-            "TradingEngine created: ${:.2} balance, ${:.2} per trade, {} max trades/cycle",
-            initial_balance,
-            trade_amount,
-            max_trades_per_cycle
+            "TradingEngine created: {} max pairs, {:.2}% fee rate",
+            max_pairs,
+            fee_rate * 100.0
         );
         
         Ok(Self {
             cache,
             websocket: Arc::new(RwLock::new(None)),
-            balance_manager,
+            config_manager,
             dispatcher,
             runtime: Arc::new(runtime),
             is_running: Arc::new(AtomicBool::new(false)),
@@ -140,7 +120,7 @@ impl TradingEngine {
         info!("Initializing engine...");
         
         let cache = Arc::clone(&self.cache);
-        let config = self.balance_manager.get_config();
+        let config = self.config_manager.get_config();
         let max_pairs = config.max_pairs;
         
         self.runtime.block_on(async {
@@ -168,7 +148,7 @@ impl TradingEngine {
 
     /// Start WebSocket streaming
     fn start_websocket(&mut self) -> PyResult<()> {
-        let config = self.balance_manager.get_config();
+        let config = self.config_manager.get_config();
         let max_pairs = config.max_pairs;
         let depth = config.orderbook_depth;
         
@@ -203,9 +183,9 @@ impl TradingEngine {
         Ok(())
     }
 
-    /// Run a single scan cycle (returns opportunities, doesn't execute)
+    /// Run a single scan cycle (returns opportunities)
     fn scan(&self, base_currencies: Vec<String>) -> Vec<Opportunity> {
-        let config = self.balance_manager.get_config();
+        let config = self.config_manager.get_config();
         let scanner = scanner::Scanner::new(Arc::clone(&self.cache), config);
         let opportunities = scanner.scan(&base_currencies);
         
@@ -215,15 +195,15 @@ impl TradingEngine {
         opportunities
     }
 
-    /// Run a dispatch cycle (scan + execute trades)
-    fn run_cycle(&self, base_currencies: Vec<String>) -> Vec<TradeResult> {
+    /// Run a dispatch cycle (scan and return opportunities)
+    fn run_cycle(&self, base_currencies: Vec<String>) -> Vec<Opportunity> {
         self.scan_count.fetch_add(1, Ordering::Relaxed);
         self.dispatcher.run_cycle(&base_currencies)
     }
 
     /// Calculate slippage for a path
     fn calculate_slippage(&self, path: String, trade_amount: f64) -> SlippageResult {
-        let config = self.balance_manager.get_config();
+        let config = self.config_manager.get_config();
         let calc = slippage::SlippageCalculator::new(
             Arc::clone(&self.cache),
             config.staleness_warn_ms,
@@ -233,126 +213,15 @@ impl TradingEngine {
         calc.calculate_path(&path, trade_amount)
     }
 
-    /// Update runtime configuration from UI dropdowns
-    #[pyo3(signature = (trade_amount=None, min_profit_threshold=None, cooldown_ms=None, max_trades_per_cycle=None, latency_penalty_pct=None, fee_rate=None))]
+    /// Update scanning configuration
+    #[pyo3(signature = (min_profit_threshold=None, fee_rate=None))]
     fn update_config(
         &self,
-        trade_amount: Option<f64>,
         min_profit_threshold: Option<f64>,
-        cooldown_ms: Option<u64>,
-        max_trades_per_cycle: Option<usize>,
-        latency_penalty_pct: Option<f64>,
         fee_rate: Option<f64>,
     ) {
-        self.balance_manager.update_config(
-            trade_amount,
-            min_profit_threshold,
-            cooldown_ms,
-            max_trades_per_cycle,
-            latency_penalty_pct,
-            fee_rate,
-        );
+        self.config_manager.update_config(min_profit_threshold, fee_rate);
     }
-
-    /// Get current config values
-    fn get_config(&self) -> (f64, f64, u64, usize, f64, f64) {
-        let config = self.balance_manager.get_config();
-        (
-            config.trade_amount,
-            config.min_profit_threshold,
-            config.cooldown_ms,
-            config.max_trades_per_cycle,
-            config.latency_penalty_pct,
-            config.fee_rate,
-        )
-    }
-
-    /// Get trading state (balance, trades, win rate)
-    fn get_trading_state(&self) -> TradingState {
-        self.balance_manager.get_state()
-    }
-
-    /// Check if can trade
-    fn can_trade(&self) -> bool {
-        self.balance_manager.can_trade()
-    }
-
-    /// Get current balance
-    fn get_balance(&self) -> f64 {
-        self.balance_manager.get_balance()
-    }
-
-    /// Get total profit
-    fn get_total_profit(&self) -> f64 {
-        self.balance_manager.get_total_profit()
-    }
-
-    /// Get win rate
-    fn get_win_rate(&self) -> f64 {
-        self.balance_manager.get_win_rate()
-    }
-
-    /// Get total trades count
-    fn get_total_trades(&self) -> u64 {
-        self.balance_manager.get_total_trades()
-    }
-
-    /// Reset balance to initial
-    fn reset(&self, initial_balance: f64) {
-        self.balance_manager.reset(initial_balance);
-    }
-
-    // ========== KILL SWITCH METHODS ==========
-
-    /// Check if trading is killed
-    fn is_killed(&self) -> bool {
-        self.balance_manager.is_killed()
-    }
-
-    /// Get kill reason (if killed)
-    fn get_kill_reason(&self) -> Option<String> {
-        self.balance_manager.get_kill_reason()
-    }
-
-    /// Manually trigger kill switch
-    fn trigger_kill(&self, reason: String) {
-        self.balance_manager.trigger_kill(&reason);
-    }
-
-    /// Reset kill switch (allows trading again)
-    fn reset_kill_switch(&self) {
-        self.balance_manager.reset_kill_switch();
-    }
-
-    /// Update kill switch settings
-    #[pyo3(signature = (enabled=None, max_loss_pct=None, max_consecutive_losses=None, max_daily_loss_pct=None))]
-    fn update_kill_switch(
-        &self,
-        enabled: Option<bool>,
-        max_loss_pct: Option<f64>,
-        max_consecutive_losses: Option<u32>,
-        max_daily_loss_pct: Option<f64>,
-    ) {
-        self.balance_manager.update_kill_switch(
-            enabled,
-            max_loss_pct,
-            max_consecutive_losses,
-            max_daily_loss_pct,
-        );
-    }
-
-    /// Get kill switch settings
-    fn get_kill_switch_settings(&self) -> (bool, f64, u32, f64) {
-        let config = self.balance_manager.get_config();
-        (
-            config.kill_switch_enabled,
-            config.max_loss_pct,
-            config.max_consecutive_losses,
-            config.max_daily_loss_pct,
-        )
-    }
-
-    // ========== ENGINE SETTINGS METHODS (Runtime Changeable) ==========
 
     /// Update engine settings (scan interval, max pairs, depth, scanner on/off)
     /// Returns true if WebSocket reconnection is needed
@@ -364,7 +233,7 @@ impl TradingEngine {
         orderbook_depth: Option<usize>,
         scanner_enabled: Option<bool>,
     ) -> bool {
-        self.balance_manager.update_engine_settings(
+        self.config_manager.update_engine_settings(
             scan_interval_ms,
             max_pairs,
             orderbook_depth,
@@ -375,7 +244,7 @@ impl TradingEngine {
     /// Get current engine settings
     fn get_engine_settings(&self) -> EngineSettings {
         let (scan_interval_ms, max_pairs, orderbook_depth, scanner_enabled) = 
-            self.balance_manager.get_engine_settings();
+            self.config_manager.get_engine_settings();
         EngineSettings {
             scan_interval_ms,
             max_pairs,
@@ -386,11 +255,10 @@ impl TradingEngine {
 
     /// Check if scanner is enabled
     fn is_scanner_enabled(&self) -> bool {
-        self.balance_manager.is_scanner_enabled()
+        self.config_manager.is_scanner_enabled()
     }
 
     /// Reconnect WebSocket with new settings (max_pairs and/or depth changed)
-    /// This stops the current connection and starts a new one
     fn reconnect_websocket(&mut self) -> PyResult<()> {
         info!("Reconnecting WebSocket with new settings...");
         
@@ -411,8 +279,8 @@ impl TradingEngine {
         // Clear old order book data
         self.cache.clear();
         
-        // Re-initialize with new pair count
-        let config = self.balance_manager.get_config();
+        // Re-initialize with new settings
+        let config = self.config_manager.get_config();
         let max_pairs = config.max_pairs;
         let depth = config.orderbook_depth;
         
@@ -457,15 +325,9 @@ impl TradingEngine {
         self.dispatcher.get_orderbook_health()
     }
 
-    /// Get locked paths
-    fn get_locked_paths(&self) -> Vec<String> {
-        self.dispatcher.get_locked_paths()
-    }
-
     /// Get engine statistics
     fn get_stats(&self) -> EngineStats {
         let (pairs, currencies, avg_staleness) = self.cache.get_stats();
-        let state = self.balance_manager.get_state();
         let dispatcher_stats = self.dispatcher.get_stats();
         
         let uptime = self.start_time
@@ -486,9 +348,6 @@ impl TradingEngine {
             avg_orderbook_staleness_ms: avg_staleness,
             opportunities_found: dispatcher_stats.opportunities_found,
             opportunities_per_second: opps_per_sec,
-            trades_executed: state.total_trades,
-            total_profit: state.total_profit,
-            win_rate: state.win_rate,
             uptime_seconds: uptime,
             scan_cycle_ms: dispatcher_stats.last_cycle_duration_ms,
             last_scan_at: dispatcher_stats.last_cycle_at,
@@ -526,11 +385,9 @@ impl TradingEngine {
 
     /// String representation
     fn __repr__(&self) -> String {
-        let state = self.balance_manager.get_state();
         format!(
-            "TradingEngine(balance=${:.2}, trades={}, running={})",
-            state.balance,
-            state.total_trades,
+            "TradingEngine(pairs={}, running={})",
+            self.cache.get_all_pairs().len(),
             self.is_running.load(Ordering::SeqCst)
         )
     }
@@ -542,8 +399,7 @@ fn trading_engine(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<TradingEngine>()?;
     m.add_class::<Opportunity>()?;
     m.add_class::<SlippageResult>()?;
-    m.add_class::<TradingState>()?;
-    m.add_class::<TradeResult>()?;
+    m.add_class::<crate::types::SlippageLeg>()?;
     m.add_class::<EngineStats>()?;
     m.add_class::<EngineSettings>()?;
     m.add_class::<OrderBookHealth>()?;

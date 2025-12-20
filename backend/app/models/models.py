@@ -1,5 +1,14 @@
 """
-SQLAlchemy ORM Models for KrakenCryptoX v2.0
+SQLAlchemy ORM Models for LimogiAICryptoX v2.0
+
+This module contains models for:
+- Trading pairs and currencies
+- Price data
+- Arbitrage opportunities (live and historical)
+- Order book health monitoring
+- Engine metrics
+
+All live trading models are in live_trading.py
 """
 from datetime import datetime
 from sqlalchemy import (
@@ -130,107 +139,8 @@ class SystemConfig(Base):
 
 
 # ============================================
-# PAPER TRADING MODELS v2.0
+# ENGINE MONITORING MODELS
 # ============================================
-
-class PaperSlot(Base):
-    """Paper trading slot - one of 12 parallel traders"""
-    __tablename__ = "paper_slots"
-
-    id = Column(Integer, primary_key=True, index=True)
-    slot_number = Column(Integer, nullable=False, unique=True)
-    balance = Column(Float, nullable=False, default=8.0)
-    initial_balance = Column(Float, nullable=False, default=8.0)
-    status = Column(String(20), nullable=False, default="READY")
-    cooldown_until = Column(DateTime, nullable=True)
-    current_opportunity_id = Column(String(100), nullable=True)
-    trades_count = Column(Integer, default=0)
-    wins_count = Column(Integer, default=0)
-    total_profit = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class PathCooldown(Base):
-    """Track path cooldowns to prevent duplicate trades"""
-    __tablename__ = "path_cooldowns"
-
-    id = Column(Integer, primary_key=True, index=True)
-    path = Column(String(500), nullable=False, index=True)
-    locked_until = Column(DateTime, nullable=False)
-    locked_by_slot = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class PaperWallet(Base):
-    """Paper wallet - aggregate view (for backwards compatibility)"""
-    __tablename__ = "paper_wallet"
-
-    id = Column(Integer, primary_key=True, index=True)
-    currency = Column(String(20), nullable=False, unique=True)
-    balance = Column(Float, nullable=False, default=0.0)
-    initial_balance = Column(Float, nullable=False, default=0.0)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class PaperTrade(Base):
-    """Paper trade - tracks all simulated trades"""
-    __tablename__ = "paper_trades"
-
-    id = Column(Integer, primary_key=True, index=True)
-    slot_id = Column(Integer, nullable=True)  # NEW: Which slot executed
-    opportunity_id = Column(BigInteger, ForeignKey("arbitrage_opportunities.id"), nullable=True)
-    path = Column(String(500), nullable=False)
-    legs = Column(Integer, nullable=False)
-    trade_amount = Column(Float, nullable=False)
-
-    # Profit calculations
-    gross_profit_pct = Column(Float, nullable=False)
-    fees_pct = Column(Float, nullable=False)
-    expected_net_profit_pct = Column(Float, nullable=False)
-
-    # Slippage details
-    slippage_pct = Column(Float, nullable=False)
-    slippage_details = Column(JSONB, nullable=True)
-
-    # Final results
-    actual_net_profit_pct = Column(Float, nullable=False)
-    actual_profit_amount = Column(Float, nullable=False)
-
-    # Wallet state
-    balance_before = Column(Float, nullable=False)
-    balance_after = Column(Float, nullable=False)
-
-    # Status
-    status = Column(String(20), nullable=False)
-    skip_reason = Column(String(200), nullable=True)
-
-    # Timing
-    evaluation_ms = Column(Float, nullable=True)  # NEW: How long evaluation took
-    orderbook_staleness_ms = Column(Float, nullable=True)  # NEW: Data freshness
-
-    executed_at = Column(DateTime, default=datetime.utcnow)
-
-    opportunity = relationship("ArbitrageOpportunity", backref="paper_trades")
-
-
-class PaperTradingSettings(Base):
-    """Paper trading settings - configuration"""
-    __tablename__ = "paper_trading_settings"
-
-    id = Column(Integer, primary_key=True, index=True)
-    is_active = Column(Boolean, default=True)
-    min_profit_threshold = Column(Float, default=0.05)
-    trade_amount = Column(Float, default=8.0)  # Per slot
-    total_capital = Column(Float, default=100.0)
-    slot_count = Column(Integer, default=12)
-    cooldown_seconds = Column(Integer, default=1)
-    path_cooldown_seconds = Column(Integer, default=3)
-    base_currency = Column(String(20), default="ALL")
-    custom_currencies = Column(JSONB, default=list)  # For CUSTOM selection: ["USD", "EUR"]
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
 
 class EngineMetrics(Base):
     """Engine performance metrics"""
@@ -273,7 +183,7 @@ class OrderBookHealthHistory(Base):
 
 
 class OpportunityHistory(Base):
-    """Historical record of all detected opportunities (not just traded ones)"""
+    """Historical record of all detected opportunities"""
     __tablename__ = "opportunity_history"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -284,13 +194,13 @@ class OpportunityHistory(Base):
     legs = Column(Integer, nullable=False)
     start_currency = Column(String(10), nullable=False, index=True)
     
-    # Profit metrics (before slippage)
+    # Profit metrics
     expected_profit_pct = Column(Float, nullable=False)
     is_profitable = Column(Boolean, nullable=False)
     
-    # Was this opportunity actually traded?
+    # Was this opportunity traded via live trading?
     was_traded = Column(Boolean, default=False)
-    trade_id = Column(Integer, nullable=True)  # Link to paper_trades if traded
+    live_trade_id = Column(String(100), nullable=True)
     
     # If traded, what was the result?
     actual_profit_pct = Column(Float, nullable=True)
@@ -298,67 +208,3 @@ class OpportunityHistory(Base):
     
     # Market snapshot
     prices_snapshot = Column(JSONB, nullable=True)
-
-
-class ShadowTrade(Base):
-    """Shadow trade execution log - compares paper vs real market conditions"""
-    __tablename__ = "shadow_trades"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    
-    # Trade details
-    path = Column(String(500), nullable=False, index=True)
-    trade_amount = Column(Float, nullable=False)
-    
-    # Paper trading results
-    paper_profit_pct = Column(Float, nullable=False)
-    
-    # Shadow (real market) results
-    shadow_profit_pct = Column(Float, nullable=False)
-    
-    # Comparison
-    difference_pct = Column(Float, nullable=False)
-    would_have_profited = Column(Boolean, nullable=False)
-    
-    # Performance
-    latency_ms = Column(Float, nullable=False)
-    
-    # Status
-    success = Column(Boolean, nullable=False, default=True)
-    reason = Column(String(500), nullable=True)
-    
-    # Market snapshot at time of execution
-    market_snapshot = Column(JSONB, nullable=True)
-
-
-class ShadowTradeDetailed(Base):
-    """Detailed shadow trade with real Kraken fees and slippage"""
-    __tablename__ = "shadow_trades_detailed"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    
-    # Trade details
-    path = Column(String(500), nullable=False, index=True)
-    legs = Column(Integer, nullable=False)
-    amount = Column(Float, nullable=False)
-    
-    # Fees from Kraken API
-    taker_fee_pct = Column(Float, nullable=False)
-    taker_fee_usd = Column(Float, nullable=False)
-    
-    # Slippage from live order book
-    total_slippage_pct = Column(Float, nullable=False)
-    total_slippage_usd = Column(Float, nullable=False)
-    
-    # Profit calculation
-    gross_profit_pct = Column(Float, nullable=False)
-    net_profit_pct = Column(Float, nullable=False)
-    net_profit_usd = Column(Float, nullable=False)
-    
-    # Status
-    status = Column(String(10), nullable=False)  # WIN / LOSS
-    
-    # Per-leg details (JSON for expandable row)
-    leg_details = Column(JSONB, nullable=True)

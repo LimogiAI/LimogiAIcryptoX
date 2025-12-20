@@ -38,12 +38,7 @@ class Settings(BaseSettings):
     # Trading Engine Settings
     # ===========================================
 
-    # Capital Management
-    total_capital: float = 100.0          # Starting capital (USD)
-
     # Timing (milliseconds)
-    cooldown_ms: int = 0                  # Cooldown between trades (0 = no cooldown)
-    path_cooldown_ms: int = 3000          # Cooldown per path after trade (3 seconds)
     scan_interval_ms: int = 10000         # Scan every 10 seconds
 
     # Order Book
@@ -61,20 +56,10 @@ class Settings(BaseSettings):
     fee_rate_taker: float = 0.0026        # 0.26% Kraken taker fee
     fee_rate_maker: float = 0.0016        # 0.16% Kraken maker fee
     min_profit_threshold: float = 0.0005  # 0.05% minimum profit to consider
-    trade_amount: float = 10.0            # Default trade amount (USD)
-    max_trades_per_cycle: int = 5         # Maximum trades per scan cycle
     max_path_legs: int = 4                # Maximum legs in arbitrage path
 
     # Base currencies to scan for arbitrage cycles
     base_currencies: List[str] = ["USD", "USDT", "EUR", "BTC", "ETH"]
-
-    # ===========================================
-    # Circuit Breaker / Kill Switch Settings
-    # ===========================================
-    kill_switch_enabled: bool = True      # Enable kill switch by default
-    max_loss_pct: float = 0.30            # Stop at 30% loss from peak
-    max_consecutive_losses: int = 10      # Stop after 10 consecutive losses
-    max_daily_loss_pct: float = 0.30      # Stop at 30% daily loss from peak
 
     # ===========================================
     # Application Settings

@@ -39,11 +39,7 @@ def get_best_profit():
 # Runtime settings (synced with Rust engine)
 _runtime_settings = {
     "is_active": True,
-    "trade_amount": 10.0,
     "min_profit_threshold": 0.0005,
-    "cooldown_seconds": 0,
-    "max_trades_per_cycle": 5,
-    "latency_penalty_pct": 0.001,
     "fee_rate": 0.0026,
     "base_currency": "ALL",
     "custom_currencies": [],
@@ -69,11 +65,7 @@ def update_runtime_settings(updates: dict):
     if engine:
         try:
             engine.update_config(
-                trade_amount=_runtime_settings.get("trade_amount"),
                 min_profit_threshold=_runtime_settings.get("min_profit_threshold"),
-                cooldown_ms=int(_runtime_settings.get("cooldown_seconds", 5) * 1000),
-                max_trades_per_cycle=_runtime_settings.get("max_trades_per_cycle"),
-                latency_penalty_pct=_runtime_settings.get("latency_penalty_pct"),
                 fee_rate=_runtime_settings.get("fee_rate"),
             )
         except Exception as e:
@@ -95,7 +87,6 @@ async def get_scanner_status():
 
     if engine:
         stats = engine.get_stats()
-        state = engine.get_trading_state()
         return {
             "is_running": stats.is_running,
             "engine": "rust_v2",
@@ -105,17 +96,12 @@ async def get_scanner_status():
             "avg_staleness_ms": stats.avg_orderbook_staleness_ms,
             "opportunities_found": stats.opportunities_found,
             "opportunities_per_second": stats.opportunities_per_second,
-            "trades_executed": stats.trades_executed,
-            "total_profit": stats.total_profit,
-            "win_rate": stats.win_rate,
             "uptime_seconds": stats.uptime_seconds,
             "scan_cycle_ms": stats.scan_cycle_ms,
             "scan_interval_ms": settings.scan_interval_ms,
             "max_pairs": settings.max_pairs,
             "orderbook_depth": settings.orderbook_depth,
             "last_scan_at": stats.last_scan_at,
-            "balance": state.balance,
-            "is_in_cooldown": state.is_in_cooldown,
         }
     else:
         return {
@@ -486,56 +472,6 @@ async def get_opportunity_history_stats(
 
 
 # ============================================
-# Trading State
-# ============================================
-
-@router.get("/trading-state")
-async def get_trading_state():
-    """Get current trading state"""
-    engine = get_engine()
-
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
-    state = engine.get_trading_state()
-
-    return {
-        "balance": state.balance,
-        "initial_balance": state.initial_balance,
-        "peak_balance": state.peak_balance,
-        "total_trades": state.total_trades,
-        "total_wins": state.total_wins,
-        "total_profit": state.total_profit,
-        "win_rate": state.win_rate,
-        "is_in_cooldown": state.is_in_cooldown,
-        "cooldown_until": state.cooldown_until,
-        "can_trade": engine.can_trade(),
-        "is_killed": state.is_killed,
-        "kill_reason": state.kill_reason,
-        "consecutive_losses": state.consecutive_losses,
-        "daily_profit": state.daily_profit,
-        "loss_from_peak_pct": state.loss_from_peak_pct,
-    }
-
-
-@router.post("/reset")
-async def reset_balance(initial_balance: float = 100.0):
-    """Reset balance to initial amount"""
-    engine = get_engine()
-
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
-    engine.reset(initial_balance)
-
-    return {
-        "success": True,
-        "message": f"Reset balance to ${initial_balance}",
-        "balance": engine.get_balance(),
-    }
-
-
-# ============================================
 # Prices
 # ============================================
 
@@ -795,101 +731,6 @@ async def toggle_trading(is_active: bool):
 
 
 # ============================================
-# Kill Switch Controls
-# ============================================
-
-@router.get("/kill-switch")
-async def get_kill_switch_status():
-    """Get kill switch status and settings"""
-    engine = get_engine()
-
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
-    state = engine.get_trading_state()
-    settings = engine.get_kill_switch_settings()
-
-    return {
-        "is_killed": state.is_killed,
-        "kill_reason": state.kill_reason,
-        "consecutive_losses": state.consecutive_losses,
-        "daily_profit": state.daily_profit,
-        "loss_from_peak_pct": state.loss_from_peak_pct,
-        "current_balance": state.balance,
-        "peak_balance": state.peak_balance,
-        "settings": {
-            "enabled": settings[0],
-            "max_loss_pct": settings[1] * 100,
-            "max_consecutive_losses": settings[2],
-            "max_daily_loss_pct": settings[3] * 100,
-        }
-    }
-
-
-@router.put("/kill-switch/settings")
-async def update_kill_switch_settings(updates: dict):
-    """Update kill switch settings"""
-    engine = get_engine()
-
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
-    enabled = updates.get("enabled")
-    max_loss_pct = updates.get("max_loss_pct")
-    max_consecutive = updates.get("max_consecutive_losses")
-    max_daily = updates.get("max_daily_loss_pct")
-
-    if max_loss_pct is not None:
-        max_loss_pct = max_loss_pct / 100
-    if max_daily is not None:
-        max_daily = max_daily / 100
-
-    engine.update_kill_switch(
-        enabled=enabled,
-        max_loss_pct=max_loss_pct,
-        max_consecutive_losses=max_consecutive,
-        max_daily_loss_pct=max_daily,
-    )
-
-    return {
-        "success": True,
-        "message": "Kill switch settings updated",
-    }
-
-
-@router.post("/kill-switch/trigger")
-async def trigger_kill_switch(reason: str = "Manual trigger"):
-    """Manually trigger the kill switch"""
-    engine = get_engine()
-
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
-    engine.trigger_kill(reason)
-
-    return {
-        "success": True,
-        "message": f"Kill switch triggered: {reason}",
-    }
-
-
-@router.post("/kill-switch/reset")
-async def reset_kill_switch():
-    """Reset the kill switch to allow trading again"""
-    engine = get_engine()
-
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
-    engine.reset_kill_switch()
-
-    return {
-        "success": True,
-        "message": "Kill switch reset - trading enabled",
-    }
-
-
-# ============================================
 # Stats Summary
 # ============================================
 
@@ -904,9 +745,6 @@ async def get_stats_summary():
         return {
             "total_opportunities": 0,
             "profitable_opportunities": 0,
-            "total_trades": 0,
-            "win_rate": 0,
-            "total_profit": 0,
         }
 
     stats = engine.get_stats()
@@ -915,9 +753,6 @@ async def get_stats_summary():
     return {
         "total_opportunities": len(cached_opps),
         "profitable_opportunities": profitable_count,
-        "total_trades": stats.trades_executed,
-        "win_rate": stats.win_rate,
-        "total_profit": stats.total_profit,
         "avg_profit_pct": sum(o.net_profit_pct for o in cached_opps) / len(cached_opps) if cached_opps else 0,
         "best_profit_pct": best_profit,
         "pairs_monitored": stats.pairs_monitored,

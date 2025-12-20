@@ -110,11 +110,7 @@ async def lifespan(app: FastAPI):
     if RUST_ENGINE_AVAILABLE:
         try:
             engine = TradingEngine(
-                initial_balance=settings.total_capital,
-                trade_amount=10.0,
                 min_profit_threshold=settings.min_profit_threshold,
-                cooldown_ms=0,
-                max_trades_per_cycle=5,
                 fee_rate=settings.fee_rate_taker,
                 max_pairs=settings.max_pairs,
             )
@@ -156,9 +152,7 @@ async def lifespan(app: FastAPI):
     logger.info("LimogiAICryptoX v2.0 is ready!")
     if engine:
         stats = engine.get_stats()
-        state = engine.get_trading_state()
         logger.info(f"Monitoring {stats.pairs_monitored} pairs")
-        logger.info(f"Balance: ${state.balance:.2f}")
     logger.info(f"Fee rate: {settings.fee_rate_taker * 100:.2f}%")
     logger.info(f"Min profit threshold: {settings.min_profit_threshold * 100:.3f}%")
     logger.info("=" * 50)
@@ -412,17 +406,13 @@ async def root():
 
     if engine:
         stats = engine.get_stats()
-        state = engine.get_trading_state()
         return {
             "name": "LimogiAICryptoX",
             "version": "2.0.0",
             "engine": "Rust",
             "status": "running" if stats.is_running else "stopped",
             "pairs_monitored": stats.pairs_monitored,
-            "balance": f"${state.balance:.2f}",
-            "trades_executed": stats.trades_executed,
-            "total_profit": f"${stats.total_profit:.2f}",
-            "win_rate": f"{stats.win_rate:.1f}%",
+            "opportunities_found": stats.opportunities_found,
             "docs": "/docs",
         }
     else:
@@ -442,7 +432,6 @@ async def health_check():
 
     if engine:
         stats = engine.get_stats()
-        state = engine.get_trading_state()
         return {
             "status": "healthy",
             "engine": "rust_v2",
@@ -450,7 +439,6 @@ async def health_check():
             "pairs_loaded": stats.pairs_monitored,
             "currencies": stats.currencies_tracked,
             "uptime_seconds": stats.uptime_seconds,
-            "balance": state.balance,
             "avg_staleness_ms": f"{stats.avg_orderbook_staleness_ms:.1f}",
         }
     else:

@@ -148,89 +148,6 @@ impl SlippageResult {
     }
 }
 
-/// Trading state (single balance pool - replaces 12-slot system)
-#[pyclass]
-#[derive(Debug, Clone)]
-pub struct TradingState {
-    #[pyo3(get)]
-    pub balance: f64,
-    #[pyo3(get)]
-    pub initial_balance: f64,
-    #[pyo3(get)]
-    pub peak_balance: f64,
-    #[pyo3(get)]
-    pub total_trades: u64,
-    #[pyo3(get)]
-    pub total_wins: u64,
-    #[pyo3(get)]
-    pub total_profit: f64,
-    #[pyo3(get)]
-    pub win_rate: f64,
-    #[pyo3(get)]
-    pub is_in_cooldown: bool,
-    #[pyo3(get)]
-    pub cooldown_until: Option<String>,
-    // Kill switch fields
-    #[pyo3(get)]
-    pub is_killed: bool,
-    #[pyo3(get)]
-    pub kill_reason: Option<String>,
-    #[pyo3(get)]
-    pub consecutive_losses: u32,
-    #[pyo3(get)]
-    pub daily_profit: f64,
-    #[pyo3(get)]
-    pub loss_from_peak_pct: f64,
-}
-
-#[pymethods]
-impl TradingState {
-    fn __repr__(&self) -> String {
-        format!(
-            "TradingState(balance=${:.2}, peak=${:.2}, trades={}, win_rate={:.1}%, killed={})",
-            self.balance, self.peak_balance, self.total_trades, self.win_rate, self.is_killed
-        )
-    }
-}
-
-/// Trade result
-#[pyclass]
-#[derive(Debug, Clone)]
-pub struct TradeResult {
-    #[pyo3(get)]
-    pub trade_id: u64,
-    #[pyo3(get)]
-    pub path: String,
-    #[pyo3(get)]
-    pub trade_amount: f64,
-    #[pyo3(get)]
-    pub expected_profit_pct: f64,
-    #[pyo3(get)]
-    pub slippage_pct: f64,
-    #[pyo3(get)]
-    pub slippage_details: String,
-    #[pyo3(get)]
-    pub actual_profit_pct: f64,
-    #[pyo3(get)]
-    pub profit_amount: f64,
-    #[pyo3(get)]
-    pub balance_before: f64,
-    #[pyo3(get)]
-    pub balance_after: f64,
-    #[pyo3(get)]
-    pub status: String,
-}
-
-#[pymethods]
-impl TradeResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "TradeResult(id={}, path='{}', profit=${:.4}, status='{}')",
-            self.trade_id, self.path, self.profit_amount, self.status
-        )
-    }
-}
-
 /// Engine statistics
 #[pyclass]
 #[derive(Debug, Clone)]
@@ -250,12 +167,6 @@ pub struct EngineStats {
     #[pyo3(get)]
     pub opportunities_per_second: f64,
     #[pyo3(get)]
-    pub trades_executed: u64,
-    #[pyo3(get)]
-    pub total_profit: f64,
-    #[pyo3(get)]
-    pub win_rate: f64,
-    #[pyo3(get)]
     pub uptime_seconds: u64,
     #[pyo3(get)]
     pub scan_cycle_ms: f64,
@@ -267,38 +178,26 @@ pub struct EngineStats {
 impl EngineStats {
     fn __repr__(&self) -> String {
         format!(
-            "EngineStats(running={}, pairs={}, trades={}, profit=${:.2})",
-            self.is_running, self.pairs_monitored, self.trades_executed, self.total_profit
+            "EngineStats(running={}, pairs={}, opportunities={})",
+            self.is_running, self.pairs_monitored, self.opportunities_found
         )
     }
 }
 
-/// Engine configuration - all values come from UI dropdowns
+/// Engine configuration
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    // From UI dropdowns
-    pub trade_amount: f64,           // Trade Amount dropdown
-    pub min_profit_threshold: f64,   // Min Profit Threshold dropdown
-    pub cooldown_ms: u64,            // Cooldown dropdown
-    pub max_trades_per_cycle: usize, // Max Trades per Cycle dropdown
-    pub latency_penalty_pct: f64,    // Latency penalty per leg (e.g., 0.001 = 0.1%)
+    // Scanning settings
+    pub min_profit_threshold: f64,   // Min profit to consider opportunity
     pub fee_rate: f64,               // Taker fee rate (e.g., 0.0026 = 0.26%)
     
-    // Kill switch settings (calculated from PEAK balance)
-    pub kill_switch_enabled: bool,        // Master enable/disable
-    pub max_loss_pct: f64,                // Stop if loss from peak exceeds this % (e.g., 0.30 = 30%)
-    pub max_consecutive_losses: u32,      // Stop after N consecutive losses
-    pub max_daily_loss_pct: f64,          // Stop if daily loss from peak exceeds this %
-    
-    // Runtime-changeable engine settings (can be updated via UI)
-    pub scan_interval_ms: u64,       // Scan Interval dropdown
-    pub orderbook_depth: usize,      // Order Book Depth dropdown
-    pub max_pairs: usize,            // Max Pairs dropdown
+    // Runtime-changeable engine settings
+    pub scan_interval_ms: u64,       // Scan interval
+    pub orderbook_depth: usize,      // Order book depth
+    pub max_pairs: usize,            // Max pairs to monitor
     pub scanner_enabled: bool,       // Scanner ON/OFF toggle
     
     // Fixed settings
-    pub initial_balance: f64,
-    pub path_cooldown_ms: u64,
     pub staleness_warn_ms: i64,
     pub staleness_buffer_ms: i64,
     pub staleness_reject_ms: i64,
@@ -331,19 +230,9 @@ impl EngineSettings {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            // Default UI values
-            trade_amount: 10.0,
+            // Scanning settings
             min_profit_threshold: 0.0005,  // 0.05%
-            cooldown_ms: 0,             // No cooldown by default
-            max_trades_per_cycle: 5,
-            latency_penalty_pct: 0.001, // 0.10% per leg default
-            fee_rate: 0.0026,           // 0.26% taker fee default
-            
-            // Kill switch defaults - calculated from PEAK balance, NO auto-reset
-            kill_switch_enabled: true,          // Enabled by default!
-            max_loss_pct: 0.30,                 // Stop at 30% loss from peak
-            max_consecutive_losses: 10,         // Stop after 10 consecutive losses
-            max_daily_loss_pct: 0.30,           // Stop at 30% daily loss from peak
+            fee_rate: 0.0026,              // 0.26% taker fee default
             
             // Runtime-changeable engine settings
             scan_interval_ms: 10000,       // 10 seconds default
@@ -352,8 +241,6 @@ impl Default for EngineConfig {
             scanner_enabled: true,         // Scanner ON by default
             
             // Fixed settings
-            initial_balance: 100.0,
-            path_cooldown_ms: 3000,
             staleness_warn_ms: 100,        // Warn if > 100ms old
             staleness_buffer_ms: 250,      // Add 1% buffer if > 250ms old
             staleness_reject_ms: 1000,     // Reject if > 1 second old
