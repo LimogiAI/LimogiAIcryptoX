@@ -2,7 +2,7 @@ services:
   # PostgreSQL Database
   db:
     image: postgres:15-alpine
-    container_name: krakencryptox-db
+    container_name: limogiai-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-krakencryptox}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-krakencryptox123}
@@ -24,22 +24,16 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: krakencryptox-backend
+    container_name: limogiai-backend
     environment:
       # Database
       - DATABASE_URL=postgresql://${POSTGRES_USER:-krakencryptox}:${POSTGRES_PASSWORD:-krakencryptox123}@db:5432/${POSTGRES_DB:-krakencryptox}
-      
-      # Kraken API
-      # - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
-      # - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
-      # - KRAKEN_PRIVATE_KEY=${KRAKEN_PRIVATE_KEY:-}
-      
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1
       - RUST_LOG=info
     volumes:
-      - ./.env.kraken:/app/.env.kraken:ro
       - ./.env.live:/app/.env.live:ro
     ports:
       - "8000:8000"
@@ -53,7 +47,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: krakencryptox-frontend
+    container_name: limogiai-frontend
     environment:
       - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
       - REACT_APP_WS_URL=${REACT_APP_WS_URL:-ws://localhost:8000}

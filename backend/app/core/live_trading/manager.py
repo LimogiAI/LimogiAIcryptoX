@@ -407,49 +407,134 @@ class LiveTradingManager:
     # ==========================================
     
     async def get_positions(self) -> Dict[str, Any]:
-        """Get current positions from Kraken"""
+        """Get current positions from Kraken with USD values for all assets"""
         try:
             balances = await self.kraken_client.get_balance()
-            
-            # Get USD values
+
+            # Currency code mapping (Kraken uses X/Z prefixes)
+            currency_map = {
+                'XXBT': 'BTC',
+                'XETH': 'ETH',
+                'XLTC': 'LTC',
+                'XXRP': 'XRP',
+                'XXLM': 'XLM',
+                'XDOGE': 'DOGE',
+                'XXMR': 'XMR',
+                'XZEC': 'ZEC',
+                'ZUSD': 'USD',
+                'ZEUR': 'EUR',
+                'ZGBP': 'GBP',
+                'ZCAD': 'CAD',
+                'ZJPY': 'JPY',
+                'ZAUD': 'AUD',
+            }
+
+            # Multiple pair formats to try for price lookups (Kraken is inconsistent)
+            pair_variants = {
+                'XXBT': ['XXBTZUSD', 'XBTUSD'],
+                'XETH': ['XETHZUSD', 'ETHUSD'],
+                'XLTC': ['XLTCZUSD', 'LTCUSD'],
+                'XXRP': ['XXRPZUSD', 'XRPUSD'],
+                'XXLM': ['XXLMZUSD', 'XLMUSD'],
+                'XDOGE': ['XDOGEZUSD', 'DOGEUSD'],
+                'XXMR': ['XXMRZUSD', 'XMRUSD'],
+                'XZEC': ['XZECZUSD', 'ZECUSD'],
+                'ZEUR': ['EURUSD', 'ZEURZUSD'],
+                'ZGBP': ['GBPUSD', 'ZGBPZUSD'],
+                'BTC': ['XBTUSD', 'XXBTZUSD'],
+                'ETH': ['ETHUSD', 'XETHZUSD'],
+                'LTC': ['LTCUSD', 'XLTCZUSD'],
+                'XRP': ['XRPUSD', 'XXRPZUSD'],
+                'USDT': ['USDTZUSD'],
+                'USDC': ['USDCUSD'],
+                'DOT': ['DOTUSD'],
+                'SOL': ['SOLUSD'],
+                'ADA': ['ADAUSD'],
+                'LINK': ['LINKUSD'],
+                'MATIC': ['MATICUSD'],
+                'AVAX': ['AVAXUSD'],
+                'ATOM': ['ATOMUSD'],
+                'UNI': ['UNIUSD'],
+                'TRX': ['TRXUSD'],
+                'DOGE': ['DOGEUSD', 'XDOGEZUSD'],
+                'XLM': ['XLMUSD', 'XXLMZUSD'],
+            }
+
             positions = []
-            total_usd = 0
-            
+            total_usd = 0.0
+            balances_dict = {}
+
             for currency, balance in balances.items():
-                if float(balance) > 0:
-                    # Try to get USD value
-                    usd_value = 0
-                    if currency in ['ZUSD', 'USD']:
-                        usd_value = float(balance)
-                    else:
+                bal = float(balance)
+                if bal <= 0.00001:  # Skip dust amounts
+                    continue
+
+                # Get display name
+                display_name = currency_map.get(currency, currency)
+
+                # Calculate USD value
+                usd_value = 0.0
+
+                # USD and stablecoins are 1:1
+                if currency in ['ZUSD', 'USD']:
+                    usd_value = bal
+                elif currency in ['USDT', 'USDC', 'DAI', 'USDT.M']:
+                    usd_value = bal  # Stablecoins ~= 1 USD
+                else:
+                    # Try multiple pair formats
+                    pairs_to_try = pair_variants.get(currency, [])
+                    # Add dynamic patterns as fallback
+                    if not pairs_to_try:
+                        pairs_to_try = [
+                            f"{currency}USD",
+                            f"{currency}ZUSD",
+                            f"X{currency}ZUSD",
+                        ]
+
+                    price = 0.0
+                    for pair in pairs_to_try:
                         try:
-                            # Try to get price
-                            pair = f"{currency}USD"
                             ticker = await self.kraken_client.get_ticker(pair)
-                            if ticker:
+                            if ticker and len(ticker) > 0:
                                 pair_data = list(ticker.values())[0]
+                                # 'c' is the last trade closed [price, lot volume]
                                 price = float(pair_data.get('c', [0])[0])
-                                usd_value = float(balance) * price
-                        except:
-                            pass
-                    
-                    positions.append({
-                        'currency': currency,
-                        'balance': float(balance),
-                        'usd_value': usd_value,
-                    })
-                    total_usd += usd_value
-            
+                                if price > 0:
+                                    usd_value = bal * price
+                                    break
+                        except Exception:
+                            continue
+
+                    if usd_value == 0 and bal > 0:
+                        logger.debug(f"Could not get USD price for {currency}, tried: {pairs_to_try}")
+
+                positions.append({
+                    'currency': display_name,
+                    'raw_currency': currency,
+                    'balance': bal,
+                    'usd_value': round(usd_value, 2),
+                })
+
+                balances_dict[display_name] = bal
+                total_usd += usd_value
+
+            # Sort positions by USD value (highest first)
+            positions.sort(key=lambda x: x['usd_value'], reverse=True)
+
             return {
+                'connected': True,
                 'positions': positions,
-                'total_usd': total_usd,
+                'balances': balances_dict,
+                'total_usd': round(total_usd, 2),
                 'synced_at': datetime.utcnow().isoformat(),
             }
-            
+
         except Exception as e:
             logger.error(f"Error fetching positions: {e}")
             return {
+                'connected': False,
                 'positions': [],
+                'balances': {},
                 'total_usd': 0,
                 'error': str(e),
             }

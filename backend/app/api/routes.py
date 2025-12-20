@@ -1,5 +1,5 @@
 """
-API Routes for KrakenCryptoX v2.0 - Single Balance Pool
+API Routes for LimogiAICryptoX v2.0 - Live Trading Platform
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +8,6 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 
 from app.core.database import get_db
-from app.models.models import PaperTrade
 
 # Import live trading routes
 from app.api.live_routes import router as live_router
@@ -44,10 +43,10 @@ _runtime_settings = {
     "min_profit_threshold": 0.0005,
     "cooldown_seconds": 0,
     "max_trades_per_cycle": 5,
-    "latency_penalty_pct": 0.001,  # 0.10% per leg default
-    "fee_rate": 0.0026,            # 0.26% taker fee default
-    "base_currency": "ALL",        # ALL, USD, EUR, BTC, ETH, USDT, CUSTOM
-    "custom_currencies": [],       # For CUSTOM: ["USD", "EUR", "USDT"]
+    "latency_penalty_pct": 0.001,
+    "fee_rate": 0.0026,
+    "base_currency": "ALL",
+    "custom_currencies": [],
 }
 
 
@@ -59,13 +58,13 @@ def get_runtime_settings():
 def update_runtime_settings(updates: dict):
     """Update runtime settings and sync with Rust engine"""
     global _runtime_settings
-    
+
     engine = get_engine()
-    
+
     for key, value in updates.items():
         if key in _runtime_settings:
             _runtime_settings[key] = value
-    
+
     # Sync with Rust engine
     if engine:
         try:
@@ -79,7 +78,7 @@ def update_runtime_settings(updates: dict):
             )
         except Exception as e:
             print(f"Warning: Could not sync settings with Rust engine: {e}")
-    
+
     return _runtime_settings.copy()
 
 
@@ -91,9 +90,9 @@ def update_runtime_settings(updates: dict):
 async def get_scanner_status():
     """Get current engine status"""
     from app.core.config import settings
-    
+
     engine = get_engine()
-    
+
     if engine:
         stats = engine.get_stats()
         state = engine.get_trading_state()
@@ -133,7 +132,7 @@ async def get_scanner_status():
 async def get_engine_settings():
     """Get current engine settings from Rust engine"""
     engine = get_engine()
-    
+
     if engine:
         settings = engine.get_engine_settings()
         return {
@@ -141,7 +140,6 @@ async def get_engine_settings():
             "max_pairs": settings.max_pairs,
             "orderbook_depth": settings.orderbook_depth,
             "scanner_enabled": settings.scanner_enabled,
-            # Available options for dropdowns
             "options": {
                 "scan_interval_ms": [100, 250, 500, 1000, 2000, 5000, 7000, 10000],
                 "max_pairs": [100, 200, 300, 400],
@@ -149,7 +147,6 @@ async def get_engine_settings():
             },
         }
     else:
-        # Fallback to config file
         from app.core.config import settings as config_settings
         return {
             "scan_interval_ms": config_settings.scan_interval_ms,
@@ -172,54 +169,41 @@ async def update_engine_settings(
     orderbook_depth: Optional[int] = None,
     scanner_enabled: Optional[bool] = None,
 ):
-    """
-    Update engine settings at runtime.
-    
-    - scan_interval_ms: Changes immediately (no reconnection)
-    - max_pairs / orderbook_depth: Requires WebSocket reconnection (~5-10 sec)
-    - scanner_enabled: Enables/disables scanner (affects auto-trading)
-    
-    Valid values:
-    - scan_interval_ms: 100, 250, 500, 1000, 2000, 5000, 7000, 10000
-    - max_pairs: 100, 200, 300, 400
-    - orderbook_depth: 10, 25, 100, 500, 1000
-    """
+    """Update engine settings at runtime."""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     valid_scan_intervals = [100, 250, 500, 1000, 2000, 5000, 7000, 10000]
     valid_max_pairs = [100, 200, 300, 400]
     valid_depths = [10, 25, 100, 500, 1000]
-    
+
     errors = []
-    
+
     if scan_interval_ms is not None and scan_interval_ms not in valid_scan_intervals:
         errors.append(f"Invalid scan_interval_ms: {scan_interval_ms}. Valid: {valid_scan_intervals}")
-    
+
     if max_pairs is not None and max_pairs not in valid_max_pairs:
         errors.append(f"Invalid max_pairs: {max_pairs}. Valid: {valid_max_pairs}")
-    
+
     if orderbook_depth is not None and orderbook_depth not in valid_depths:
         errors.append(f"Invalid orderbook_depth: {orderbook_depth}. Valid: {valid_depths}")
-    
+
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
-    
-    # Check if any setting provided
+
     if all(v is None for v in [scan_interval_ms, max_pairs, orderbook_depth, scanner_enabled]):
         raise HTTPException(status_code=400, detail="No settings provided to update")
-    
+
     try:
-        # Update settings in Rust engine (returns True if reconnection needed)
         needs_reconnect = engine.update_engine_settings(
             scan_interval_ms=scan_interval_ms,
             max_pairs=max_pairs,
             orderbook_depth=orderbook_depth,
             scanner_enabled=scanner_enabled,
         )
-        
+
         return {
             "success": True,
             "updated": {
@@ -239,23 +223,16 @@ async def update_engine_settings(
 
 @router.post("/engine/restart")
 async def restart_engine():
-    """
-    Hot-reload the engine with new settings.
-    This reconnects WebSocket with new pairs/depth settings.
-    Takes about 5-10 seconds.
-    """
+    """Hot-reload the engine with new settings."""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     try:
-        # Hot-reload: reconnect WebSocket with current settings
         engine.reconnect_websocket()
-        
-        # Get updated stats
         settings = engine.get_engine_settings()
-        
+
         return {
             "success": True,
             "message": "Engine restarted successfully",
@@ -274,12 +251,12 @@ async def restart_engine():
 async def get_orderbook_health():
     """Get order book health statistics"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     health = engine.get_orderbook_health()
-    
+
     return {
         "total_pairs": health.total_pairs,
         "valid_pairs": health.valid_pairs,
@@ -310,22 +287,21 @@ async def get_orderbook_health():
 
 @router.get("/orderbook-health/history")
 async def get_orderbook_health_history(
-    hours: int = Query(default=24, le=720),  # Max 30 days
+    hours: int = Query(default=24, le=720),
     db: AsyncSession = Depends(get_db),
 ):
     """Get order book health history for trend charts"""
     from app.models.models import OrderBookHealthHistory
-    from datetime import datetime, timedelta
-    
+
     cutoff = datetime.utcnow() - timedelta(hours=hours)
-    
+
     query = select(OrderBookHealthHistory).where(
         OrderBookHealthHistory.timestamp >= cutoff
     ).order_by(OrderBookHealthHistory.timestamp.asc())
-    
+
     result = await db.execute(query)
     records = result.scalars().all()
-    
+
     return {
         "count": len(records),
         "hours": hours,
@@ -361,19 +337,19 @@ async def trigger_scan(
 ):
     """Manually trigger a scan"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     if base_currencies is None:
         base_currencies = ["USD", "USDT", "EUR", "BTC", "ETH"]
-    
+
     try:
         opportunities = engine.scan(base_currencies)
-        
+
         profitable = [o for o in opportunities if o.is_profitable]
         best_profit = max((o.net_profit_pct for o in opportunities), default=0.0)
-        
+
         return {
             "success": True,
             "total_opportunities": len(opportunities),
@@ -405,26 +381,26 @@ async def get_opportunity_history(
     profitable_only: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get historical opportunities (not just traded ones)"""
+    """Get historical opportunities"""
     from app.models.models import OpportunityHistory
-    
+
     cutoff = datetime.utcnow() - timedelta(hours=hours)
-    
+
     query = select(OpportunityHistory).where(
         OpportunityHistory.timestamp >= cutoff
     )
-    
+
     if start_currency:
         query = query.where(OpportunityHistory.start_currency == start_currency)
-    
+
     if profitable_only:
         query = query.where(OpportunityHistory.is_profitable == True)
-    
+
     query = query.order_by(desc(OpportunityHistory.timestamp)).limit(limit)
-    
+
     result = await db.execute(query)
     records = result.scalars().all()
-    
+
     return {
         "count": len(records),
         "hours": hours,
@@ -454,41 +430,36 @@ async def get_opportunity_history_stats(
     """Get statistics about historical opportunities"""
     from app.models.models import OpportunityHistory
     from sqlalchemy import func
-    
+
     cutoff = datetime.utcnow() - timedelta(hours=hours)
-    
-    # Total count
+
     total_query = select(func.count(OpportunityHistory.id)).where(
         OpportunityHistory.timestamp >= cutoff
     )
     total_result = await db.execute(total_query)
     total_count = total_result.scalar() or 0
-    
-    # Profitable count
+
     profitable_query = select(func.count(OpportunityHistory.id)).where(
         OpportunityHistory.timestamp >= cutoff,
         OpportunityHistory.is_profitable == True
     )
     profitable_result = await db.execute(profitable_query)
     profitable_count = profitable_result.scalar() or 0
-    
-    # Traded count
+
     traded_query = select(func.count(OpportunityHistory.id)).where(
         OpportunityHistory.timestamp >= cutoff,
         OpportunityHistory.was_traded == True
     )
     traded_result = await db.execute(traded_query)
     traded_count = traded_result.scalar() or 0
-    
-    # Average expected profit
+
     avg_profit_query = select(func.avg(OpportunityHistory.expected_profit_pct)).where(
         OpportunityHistory.timestamp >= cutoff,
         OpportunityHistory.is_profitable == True
     )
     avg_profit_result = await db.execute(avg_profit_query)
     avg_profit = avg_profit_result.scalar() or 0
-    
-    # Top paths
+
     top_paths_query = select(
         OpportunityHistory.path,
         func.count(OpportunityHistory.id).label('count')
@@ -499,10 +470,10 @@ async def get_opportunity_history_stats(
     ).order_by(
         desc('count')
     ).limit(10)
-    
+
     top_paths_result = await db.execute(top_paths_query)
     top_paths = [{"path": row[0], "count": row[1]} for row in top_paths_result.fetchall()]
-    
+
     return {
         "hours": hours,
         "total_opportunities": total_count,
@@ -515,19 +486,19 @@ async def get_opportunity_history_stats(
 
 
 # ============================================
-# Trading State (replaces slots)
+# Trading State
 # ============================================
 
 @router.get("/trading-state")
 async def get_trading_state():
-    """Get current trading state (single balance pool)"""
+    """Get current trading state"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     state = engine.get_trading_state()
-    
+
     return {
         "balance": state.balance,
         "initial_balance": state.initial_balance,
@@ -539,7 +510,6 @@ async def get_trading_state():
         "is_in_cooldown": state.is_in_cooldown,
         "cooldown_until": state.cooldown_until,
         "can_trade": engine.can_trade(),
-        # Kill switch status
         "is_killed": state.is_killed,
         "kill_reason": state.kill_reason,
         "consecutive_losses": state.consecutive_losses,
@@ -552,36 +522,16 @@ async def get_trading_state():
 async def reset_balance(initial_balance: float = 100.0):
     """Reset balance to initial amount"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     engine.reset(initial_balance)
-    
+
     return {
         "success": True,
         "message": f"Reset balance to ${initial_balance}",
         "balance": engine.get_balance(),
-    }
-
-
-# ============================================
-# Locked Paths
-# ============================================
-
-@router.get("/locked-paths")
-async def get_locked_paths():
-    """Get currently locked paths (in cooldown)"""
-    engine = get_engine()
-    
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-    
-    paths = engine.get_locked_paths()
-    
-    return {
-        "count": len(paths),
-        "paths": paths,
     }
 
 
@@ -593,12 +543,12 @@ async def get_locked_paths():
 async def get_prices(limit: int = Query(default=50, le=500)):
     """Get live prices from Rust engine"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     prices = engine.get_all_prices()[:limit]
-    
+
     return {
         "count": len(prices),
         "prices": [
@@ -624,17 +574,17 @@ async def get_live_prices_endpoint(limit: int = Query(default=50, le=500)):
 async def get_price_matrix_endpoint(currencies: Optional[str] = None):
     """Get price matrix for frontend"""
     engine = get_engine()
-    
+
     if not engine:
         return {"matrix": {}, "currencies": []}
-    
+
     all_prices = engine.get_all_prices()
     currency_list = sorted(engine.get_currencies())
-    
+
     if currencies:
         filter_list = [c.strip().upper() for c in currencies.split(",")]
         currency_list = [c for c in currency_list if c in filter_list]
-    
+
     matrix = {}
     for curr in currency_list[:20]:
         matrix[curr] = {}
@@ -646,7 +596,7 @@ async def get_price_matrix_endpoint(currencies: Optional[str] = None):
                     matrix[curr][quote] = {"bid": bid, "ask": ask}
                 elif quote == curr:
                     matrix[curr][base] = {"bid": 1/ask if ask > 0 else 0, "ask": 1/bid if bid > 0 else 0}
-    
+
     return {"matrix": matrix, "currencies": currency_list[:20]}
 
 
@@ -658,12 +608,12 @@ async def get_price_matrix_endpoint(currencies: Optional[str] = None):
 async def get_currencies():
     """Get all currencies"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     currencies = engine.get_currencies()
-    
+
     return {
         "count": len(currencies),
         "currencies": sorted(currencies),
@@ -674,12 +624,12 @@ async def get_currencies():
 async def get_pairs():
     """Get all trading pairs"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     pairs = engine.get_pairs()
-    
+
     return {
         "count": len(pairs),
         "pairs": sorted(pairs),
@@ -697,12 +647,12 @@ async def calculate_slippage(
 ):
     """Calculate slippage for a path"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     result = engine.calculate_slippage(path, trade_amount)
-    
+
     return {
         "path": path,
         "trade_amount": trade_amount,
@@ -737,34 +687,28 @@ async def get_opportunities(
     base_currency: Optional[str] = None,
 ):
     """Get cached arbitrage opportunities"""
-    
+
     opportunities = get_cached_opportunities()
-    
+
     if not opportunities:
         return {"count": 0, "opportunities": []}
-    
-    # Filter by base currency if specified
+
     if base_currency and base_currency != "ALL":
         opportunities = [o for o in opportunities if o.path.startswith(base_currency)]
-    
-    # Filter profitable only
+
     if profitable_only:
         opportunities = [o for o in opportunities if o.is_profitable]
-    
-    # Filter by min profit
+
     if min_profit_pct is not None:
         opportunities = [o for o in opportunities if o.net_profit_pct >= min_profit_pct]
-    
-    # Sort
+
     if sort_by == "profit":
         opportunities = sorted(opportunities, key=lambda o: o.net_profit_pct, reverse=True)
-    
-    # Limit
+
     opportunities = opportunities[:limit]
-    
-    # Fee rate per leg (0.26%)
+
     fee_rate = 0.26
-    
+
     return {
         "count": len(opportunities),
         "opportunities": [
@@ -785,50 +729,14 @@ async def get_opportunities(
 
 
 # ============================================
-# Trades (from database)
-# ============================================
-
-@router.get("/trades")
-async def get_trades(
-    limit: int = Query(default=50, le=500),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get recent paper trades"""
-    query = select(PaperTrade).order_by(desc(PaperTrade.executed_at)).limit(limit)
-    
-    result = await db.execute(query)
-    trades = result.scalars().all()
-    
-    return {
-        "count": len(trades),
-        "trades": [
-            {
-                "id": t.id,
-                "path": t.path,
-                "legs": t.legs,
-                "trade_amount": t.trade_amount,
-                "expected_net_profit_pct": t.expected_net_profit_pct,
-                "slippage_pct": t.slippage_pct,
-                "actual_net_profit_pct": t.actual_net_profit_pct,
-                "actual_profit_amount": t.actual_profit_amount,
-                "status": t.status,
-                "executed_at": t.executed_at.isoformat(),
-            }
-            for t in trades
-        ],
-    }
-
-
-# ============================================
 # Trade Controls (Settings)
 # ============================================
 
 @router.get("/trade-controls")
 async def get_trade_controls():
     """Get trade control settings"""
-    engine = get_engine()
     runtime = get_runtime_settings()
-    
+
     return {
         "is_active": runtime["is_active"],
         "trade_amount": runtime["trade_amount"],
@@ -856,12 +764,12 @@ async def update_trade_controls(updates: dict):
         "base_currency": "base_currency",
         "custom_currencies": "custom_currencies",
     }
-    
+
     mapped_updates = {}
     for key, value in updates.items():
         if key in key_mapping:
             mapped_updates[key_mapping[key]] = value
-    
+
     if mapped_updates:
         updated = update_runtime_settings(mapped_updates)
         return {
@@ -869,7 +777,7 @@ async def update_trade_controls(updates: dict):
             "message": "Settings updated",
             "settings": updated,
         }
-    
+
     return {
         "success": False,
         "message": "No valid settings to update",
@@ -894,13 +802,13 @@ async def toggle_trading(is_active: bool):
 async def get_kill_switch_status():
     """Get kill switch status and settings"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     state = engine.get_trading_state()
     settings = engine.get_kill_switch_settings()
-    
+
     return {
         "is_killed": state.is_killed,
         "kill_reason": state.kill_reason,
@@ -911,9 +819,9 @@ async def get_kill_switch_status():
         "peak_balance": state.peak_balance,
         "settings": {
             "enabled": settings[0],
-            "max_loss_pct": settings[1] * 100,  # Convert to percentage
+            "max_loss_pct": settings[1] * 100,
             "max_consecutive_losses": settings[2],
-            "max_daily_loss_pct": settings[3] * 100,  # Convert to percentage
+            "max_daily_loss_pct": settings[3] * 100,
         }
     }
 
@@ -922,28 +830,27 @@ async def get_kill_switch_status():
 async def update_kill_switch_settings(updates: dict):
     """Update kill switch settings"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
-    # Convert percentages to decimals
+
     enabled = updates.get("enabled")
     max_loss_pct = updates.get("max_loss_pct")
     max_consecutive = updates.get("max_consecutive_losses")
     max_daily = updates.get("max_daily_loss_pct")
-    
+
     if max_loss_pct is not None:
-        max_loss_pct = max_loss_pct / 100  # Convert from percentage
+        max_loss_pct = max_loss_pct / 100
     if max_daily is not None:
-        max_daily = max_daily / 100  # Convert from percentage
-    
+        max_daily = max_daily / 100
+
     engine.update_kill_switch(
         enabled=enabled,
         max_loss_pct=max_loss_pct,
         max_consecutive_losses=max_consecutive,
         max_daily_loss_pct=max_daily,
     )
-    
+
     return {
         "success": True,
         "message": "Kill switch settings updated",
@@ -954,12 +861,12 @@ async def update_kill_switch_settings(updates: dict):
 async def trigger_kill_switch(reason: str = "Manual trigger"):
     """Manually trigger the kill switch"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     engine.trigger_kill(reason)
-    
+
     return {
         "success": True,
         "message": f"Kill switch triggered: {reason}",
@@ -970,12 +877,12 @@ async def trigger_kill_switch(reason: str = "Manual trigger"):
 async def reset_kill_switch():
     """Reset the kill switch to allow trading again"""
     engine = get_engine()
-    
+
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not available")
-    
+
     engine.reset_kill_switch()
-    
+
     return {
         "success": True,
         "message": "Kill switch reset - trading enabled",
@@ -983,543 +890,8 @@ async def reset_kill_switch():
 
 
 # ============================================
-# Legacy endpoints (backwards compatibility)
+# Stats Summary
 # ============================================
-
-@router.get("/paper-trading/settings")
-async def get_paper_trading_settings():
-    """Get paper trading settings (legacy)"""
-    return await get_trade_controls()
-
-
-# ============================================
-# Shadow Mode / Kraken Integration
-# ============================================
-
-@router.get("/shadow/status")
-async def get_shadow_status():
-    """Get shadow mode status and Kraken connection info"""
-    from app.core.kraken_client import get_kraken_client
-    from app.core.shadow_executor import get_shadow_executor
-    
-    client = get_kraken_client()
-    executor = get_shadow_executor()
-    
-    if not client:
-        return {
-            "connected": False,
-            "mode": "disconnected",
-            "message": "Kraken client not initialized. Check API credentials.",
-        }
-    
-    # Try to get balance to verify connection
-    try:
-        balance = await client.get_balance()
-        trade_balance = await client.get_trade_balance()
-        connected = True
-        # Use equity balance (eb) which matches Kraken website total value
-        balance_usd = float(trade_balance.get("eb", 0))
-        # Also get raw balances for display
-        raw_balances = {k: v for k, v in balance.items() if v > 0}
-    except Exception as e:
-        connected = False
-        balance_usd = 0
-        raw_balances = {}
-        
-    shadow_stats = client.get_shadow_stats()
-    executor_stats = executor.get_stats() if executor else {}
-    
-    return {
-        "connected": connected,
-        "mode": shadow_stats.get("mode", "shadow"),
-        "live_trading_enabled": shadow_stats.get("live_trading_enabled", False),
-        "max_loss_usd": shadow_stats.get("max_loss_usd", 30),
-        "kraken_balance_usd": balance_usd,
-        "kraken_balances": raw_balances,
-        "shadow_stats": {
-            "total_trades": shadow_stats.get("total_shadow_trades", 0),
-            "total_profit": shadow_stats.get("total_shadow_profit", 0),
-        },
-        "executor_stats": executor_stats,
-    }
-
-
-@router.get("/shadow/balance")
-async def get_kraken_balance():
-    """Get real Kraken account balance"""
-    from app.core.kraken_client import get_kraken_client
-    
-    client = get_kraken_client()
-    if not client:
-        raise HTTPException(status_code=503, detail="Kraken client not initialized")
-        
-    try:
-        balance = await client.get_balance()
-        trade_balance = await client.get_trade_balance()
-        
-        return {
-            "balances": balance,
-            "trade_balance": trade_balance,
-            "total_usd": balance.get("ZUSD", 0) + balance.get("USD", 0),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/shadow/trades")
-async def get_shadow_trades(limit: int = Query(default=50, le=200)):
-    """Get recent shadow trades from memory (for backwards compatibility)"""
-    from app.core.kraken_client import get_kraken_client
-    from app.core.shadow_executor import get_shadow_executor
-    
-    client = get_kraken_client()
-    executor = get_shadow_executor()
-    
-    result = {
-        "client_trades": [],
-        "executor_trades": [],
-    }
-    
-    if client:
-        result["client_trades"] = client.get_recent_shadow_trades(limit)
-        
-    if executor:
-        result["executor_trades"] = executor.get_recent_executions(limit)
-        
-    return result
-
-
-@router.get("/shadow/trades/history")
-async def get_shadow_trades_history(
-    limit: int = Query(default=50, le=500),
-    offset: int = Query(default=0, ge=0),
-    hours: int = Query(default=24, ge=1, le=720),
-    result_filter: Optional[str] = Query(default=None, description="Filter by result: 'win', 'loss', or None for all"),
-    path_filter: Optional[str] = Query(default=None, description="Filter by path (partial match)"),
-):
-    """Get shadow trades from database with pagination and filtering"""
-    from sqlalchemy import select, func, desc, and_
-    from app.models.models import ShadowTrade
-    from app.core.database import SessionLocal
-    
-    db = SessionLocal()
-    try:
-        # Base query
-        since = datetime.utcnow() - timedelta(hours=hours)
-        conditions = [ShadowTrade.timestamp >= since]
-        
-        # Apply filters
-        if result_filter == "win":
-            conditions.append(ShadowTrade.would_have_profited == True)
-        elif result_filter == "loss":
-            conditions.append(ShadowTrade.would_have_profited == False)
-            
-        if path_filter:
-            # Filter by paths starting with the specified currency
-            conditions.append(ShadowTrade.path.ilike(f"{path_filter}%"))
-        
-        # Get total count
-        count_query = select(func.count(ShadowTrade.id)).where(and_(*conditions))
-        total_count = db.execute(count_query).scalar() or 0
-        
-        # Get trades
-        query = (
-            select(ShadowTrade)
-            .where(and_(*conditions))
-            .order_by(desc(ShadowTrade.timestamp))
-            .offset(offset)
-            .limit(limit)
-        )
-        
-        trades = db.execute(query).scalars().all()
-        
-        return {
-            "total": total_count,
-            "limit": limit,
-            "offset": offset,
-            "has_more": (offset + limit) < total_count,
-            "trades": [
-                {
-                    "id": t.id,
-                    "timestamp": t.timestamp.isoformat() + "Z" if t.timestamp else None,
-                    "path": t.path,
-                    "trade_amount": t.trade_amount,
-                    "paper_profit_pct": t.paper_profit_pct,
-                    "shadow_profit_pct": t.shadow_profit_pct,
-                    "difference_pct": t.difference_pct,
-                    "would_have_profited": t.would_have_profited,
-                    "latency_ms": t.latency_ms,
-                    "success": t.success,
-                    "reason": t.reason,
-                }
-                for t in trades
-            ]
-        }
-    finally:
-        db.close()
-
-
-@router.get("/shadow/trades/stats")
-async def get_shadow_trades_stats(hours: int = Query(default=24, ge=1, le=720)):
-    """Get shadow trades statistics from database"""
-    from sqlalchemy import select, func, and_
-    from app.models.models import ShadowTrade
-    from app.core.database import SessionLocal
-    
-    db = SessionLocal()
-    try:
-        since = datetime.utcnow() - timedelta(hours=hours)
-        
-        # Total trades
-        total_query = select(func.count(ShadowTrade.id)).where(ShadowTrade.timestamp >= since)
-        total = db.execute(total_query).scalar() or 0
-        
-        # Wins
-        wins_query = select(func.count(ShadowTrade.id)).where(
-            and_(ShadowTrade.timestamp >= since, ShadowTrade.would_have_profited == True)
-        )
-        wins = db.execute(wins_query).scalar() or 0
-        
-        # Avg paper profit
-        avg_paper_query = select(func.avg(ShadowTrade.paper_profit_pct)).where(ShadowTrade.timestamp >= since)
-        avg_paper = db.execute(avg_paper_query).scalar() or 0
-        
-        # Avg shadow profit
-        avg_shadow_query = select(func.avg(ShadowTrade.shadow_profit_pct)).where(ShadowTrade.timestamp >= since)
-        avg_shadow = db.execute(avg_shadow_query).scalar() or 0
-        
-        # Avg latency
-        avg_latency_query = select(func.avg(ShadowTrade.latency_ms)).where(ShadowTrade.timestamp >= since)
-        avg_latency = db.execute(avg_latency_query).scalar() or 0
-        
-        return {
-            "hours": hours,
-            "total_trades": total,
-            "wins": wins,
-            "losses": total - wins,
-            "win_rate": (wins / total * 100) if total > 0 else 0,
-            "avg_paper_profit_pct": float(avg_paper) if avg_paper else 0,
-            "avg_shadow_profit_pct": float(avg_shadow) if avg_shadow else 0,
-            "avg_difference_pct": float(avg_paper - avg_shadow) if avg_paper and avg_shadow else 0,
-            "avg_latency_ms": float(avg_latency) if avg_latency else 0,
-        }
-    finally:
-        db.close()
-
-
-@router.get("/shadow/accuracy")
-async def get_shadow_accuracy():
-    """Get accuracy report comparing paper vs shadow trading"""
-    from app.core.shadow_executor import get_shadow_executor
-    
-    executor = get_shadow_executor()
-    if not executor:
-        raise HTTPException(status_code=503, detail="Shadow executor not initialized")
-        
-    return executor.get_accuracy_report()
-
-
-@router.get("/shadow/trades/detailed")
-async def get_shadow_trades_detailed(
-    limit: int = Query(default=50, le=500),
-    offset: int = Query(default=0, ge=0),
-    hours: int = Query(default=24, ge=1, le=720),
-    result_filter: Optional[str] = Query(default=None, description="Filter by result: 'win', 'loss', or None for all"),
-    path_filter: Optional[str] = Query(default=None, description="Filter by path (partial match)"),
-):
-    """Get detailed shadow trades with real Kraken fees and slippage"""
-    from sqlalchemy import select, func, desc, and_
-    from app.models.models import ShadowTradeDetailed
-    from app.core.database import SessionLocal
-    
-    db = SessionLocal()
-    try:
-        # Base query
-        since = datetime.utcnow() - timedelta(hours=hours)
-        conditions = [ShadowTradeDetailed.timestamp >= since]
-        
-        # Apply filters
-        if result_filter == "win":
-            conditions.append(ShadowTradeDetailed.status == "WIN")
-        elif result_filter == "loss":
-            conditions.append(ShadowTradeDetailed.status == "LOSS")
-            
-        if path_filter:
-            # Filter by paths starting with the specified currency
-            conditions.append(ShadowTradeDetailed.path.ilike(f"{path_filter}%"))
-        
-        # Get total count
-        count_query = select(func.count(ShadowTradeDetailed.id)).where(and_(*conditions))
-        total_count = db.execute(count_query).scalar() or 0
-        
-        # Get trades
-        query = (
-            select(ShadowTradeDetailed)
-            .where(and_(*conditions))
-            .order_by(desc(ShadowTradeDetailed.timestamp))
-            .offset(offset)
-            .limit(limit)
-        )
-        
-        trades = db.execute(query).scalars().all()
-        
-        return {
-            "total": total_count,
-            "limit": limit,
-            "offset": offset,
-            "has_more": (offset + limit) < total_count,
-            "trades": [
-                {
-                    "id": t.id,
-                    "timestamp": t.timestamp.isoformat() + "Z" if t.timestamp else None,
-                    "path": t.path,
-                    "legs": t.legs,
-                    "amount": t.amount,
-                    "taker_fee_pct": t.taker_fee_pct,
-                    "taker_fee_usd": t.taker_fee_usd,
-                    "total_slippage_pct": t.total_slippage_pct,
-                    "total_slippage_usd": t.total_slippage_usd,
-                    "gross_profit_pct": t.gross_profit_pct,
-                    "net_profit_pct": t.net_profit_pct,
-                    "net_profit_usd": t.net_profit_usd,
-                    "status": t.status,
-                    "leg_details": t.leg_details,
-                }
-                for t in trades
-            ]
-        }
-    finally:
-        db.close()
-
-
-@router.get("/shadow/trades/detailed/{trade_id}")
-async def get_shadow_trade_detail(trade_id: int):
-    """Get single detailed shadow trade with leg breakdown"""
-    from sqlalchemy import select
-    from app.models.models import ShadowTradeDetailed
-    from app.core.database import SessionLocal
-    
-    db = SessionLocal()
-    try:
-        query = select(ShadowTradeDetailed).where(ShadowTradeDetailed.id == trade_id)
-        trade = db.execute(query).scalar_one_or_none()
-        
-        if not trade:
-            raise HTTPException(status_code=404, detail="Trade not found")
-        
-        return {
-            "id": trade.id,
-            "timestamp": trade.timestamp.isoformat() + "Z" if trade.timestamp else None,
-            "path": trade.path,
-            "legs": trade.legs,
-            "amount": trade.amount,
-            "taker_fee_pct": trade.taker_fee_pct,
-            "taker_fee_usd": trade.taker_fee_usd,
-            "total_slippage_pct": trade.total_slippage_pct,
-            "total_slippage_usd": trade.total_slippage_usd,
-            "gross_profit_pct": trade.gross_profit_pct,
-            "net_profit_pct": trade.net_profit_pct,
-            "net_profit_usd": trade.net_profit_usd,
-            "status": trade.status,
-            "leg_details": trade.leg_details,
-        }
-    finally:
-        db.close()
-
-
-@router.post("/shadow/execute")
-async def execute_shadow_trade(
-    path: str,
-    trade_amount: float = 10.0,
-    expected_profit_pct: float = 0.1,
-    slippage_pct: float = 0.05,
-):
-    """Manually trigger a shadow trade execution"""
-    from app.core.shadow_executor import get_shadow_executor
-    
-    executor = get_shadow_executor()
-    if not executor:
-        raise HTTPException(status_code=503, detail="Shadow executor not initialized")
-        
-    result = await executor.execute_shadow(
-        path=path,
-        trade_amount_usd=trade_amount,
-        paper_expected_profit_pct=expected_profit_pct,
-        paper_slippage_pct=slippage_pct,
-    )
-    
-    return {
-        "success": result.success,
-        "path": result.path,
-        "paper_profit_pct": result.paper_profit_pct,
-        "shadow_profit_pct": result.shadow_profit_pct,
-        "difference_pct": result.difference_pct,
-        "latency_ms": result.latency_ms,
-        "would_have_profited": result.would_have_profited,
-        "reason": result.reason,
-    }
-
-
-@router.post("/shadow/mode")
-async def set_shadow_mode(enable_shadow: bool = True):
-    """Switch between shadow and live mode"""
-    from app.core.kraken_client import get_kraken_client
-    
-    client = get_kraken_client()
-    if not client:
-        raise HTTPException(status_code=503, detail="Kraken client not initialized")
-        
-    if enable_shadow:
-        client.disable_live_trading()
-        return {"mode": "shadow", "message": "Shadow mode enabled. Trades will be logged but not executed."}
-    else:
-        # Don't auto-enable live trading - require explicit confirmation
-        return {
-            "mode": "shadow", 
-            "message": "Live trading cannot be enabled via API for safety. Use enable_live_trading endpoint with confirmation.",
-        }
-
-
-@router.post("/shadow/enable-live")
-async def enable_live_trading(confirm: bool = False, confirm_text: str = ""):
-    """
-    Enable live trading. Requires explicit confirmation.
-    You must pass confirm=true AND confirm_text="I understand the risks"
-    """
-    from app.core.kraken_client import get_kraken_client
-    
-    client = get_kraken_client()
-    if not client:
-        raise HTTPException(status_code=503, detail="Kraken client not initialized")
-        
-    if not confirm or confirm_text != "I understand the risks":
-        raise HTTPException(
-            status_code=400, 
-            detail="Live trading requires confirm=true AND confirm_text='I understand the risks'"
-        )
-        
-    try:
-        client.enable_live_trading(confirm=True)
-        return {
-            "mode": "live",
-            "message": "⚠️ LIVE TRADING ENABLED. Real money will be used!",
-            "max_loss_usd": client.max_loss_usd,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/paper-trading/settings")
-async def update_paper_trading_settings_endpoint(updates: dict):
-    """Update paper trading settings (legacy)"""
-    return await update_trade_controls(updates)
-
-
-@router.post("/paper-trading/toggle")
-async def toggle_paper_trading(is_active: bool):
-    """Toggle paper trading on/off (legacy)"""
-    return await toggle_trading(is_active)
-
-
-@router.get("/paper-trading/wallet")
-async def get_paper_wallet():
-    """Get paper wallet (legacy)"""
-    engine = get_engine()
-    
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-    
-    state = engine.get_trading_state()
-    
-    return {
-        "currency": "USD",
-        "balance": state.balance,
-        "initial_balance": state.initial_balance,
-        "profit_loss": state.total_profit,
-        "profit_loss_pct": (state.total_profit / state.initial_balance * 100) if state.initial_balance > 0 else 0,
-    }
-
-
-@router.get("/paper-trading/stats")
-async def get_paper_trading_stats():
-    """Get paper trading statistics (legacy)"""
-    engine = get_engine()
-    
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-    
-    state = engine.get_trading_state()
-    
-    return {
-        "total_trades": state.total_trades,
-        "winning_trades": state.total_wins,
-        "losing_trades": state.total_trades - state.total_wins,
-        "win_rate": state.win_rate,
-        "total_profit": state.total_profit,
-        "current_balance": state.balance,
-        "initial_balance": state.initial_balance,
-    }
-
-
-@router.post("/paper-trading/wallet/reset")
-async def reset_paper_wallet(initial_balance: float = 100.0):
-    """Reset paper wallet (legacy)"""
-    return await reset_balance(initial_balance)
-
-
-@router.get("/paper-trading/trades")
-async def get_paper_trading_trades(
-    limit: int = Query(default=50, le=500),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get paper trades (legacy)"""
-    return await get_trades(limit=limit, db=db)
-
-
-@router.post("/paper-trading/initialize")
-async def initialize_paper_trading():
-    """Initialize paper trading (legacy)"""
-    engine = get_engine()
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-    
-    return {
-        "success": True,
-        "message": "Paper trading initialized",
-        "balance": engine.get_balance(),
-    }
-
-
-@router.get("/slots")
-async def get_slots():
-    """Get slots (legacy - returns single balance as slot 0)"""
-    engine = get_engine()
-    
-    if not engine:
-        raise HTTPException(status_code=503, detail="Engine not available")
-    
-    state = engine.get_trading_state()
-    
-    # Return single "slot" for backwards compatibility
-    return {
-        "slots": [
-            {
-                "id": 0,
-                "balance": state.balance,
-                "status": "COOLDOWN" if state.is_in_cooldown else "READY",
-                "cooldown_until": state.cooldown_until,
-                "trades_count": state.total_trades,
-                "wins_count": state.total_wins,
-                "win_rate": state.win_rate,
-                "total_profit": state.total_profit,
-            }
-        ],
-        "total_balance": state.balance,
-        "total_profit": state.total_profit,
-        "win_rate": state.win_rate,
-        "ready_slots": 0 if state.is_in_cooldown else 1,
-    }
-
 
 @router.get("/stats/summary")
 async def get_stats_summary():
@@ -1527,7 +899,7 @@ async def get_stats_summary():
     engine = get_engine()
     cached_opps = get_cached_opportunities()
     best_profit = get_best_profit()
-    
+
     if not engine:
         return {
             "total_opportunities": 0,
@@ -1536,10 +908,10 @@ async def get_stats_summary():
             "win_rate": 0,
             "total_profit": 0,
         }
-    
+
     stats = engine.get_stats()
     profitable_count = len([o for o in cached_opps if o.is_profitable])
-    
+
     return {
         "total_opportunities": len(cached_opps),
         "profitable_opportunities": profitable_count,

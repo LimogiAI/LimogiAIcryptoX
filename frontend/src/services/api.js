@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://3.86.56.158:8000';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 const client = axios.create({
   baseURL: API_URL,
@@ -40,21 +40,21 @@ export const api = {
       min_profit_pct = null,
       minutes_ago = null,
     } = options;
-    
+
     let url = `/api/opportunities?limit=${limit}&profitable_only=${profitable_only}&hours=${hours}&sort_by=${sort_by}`;
-    
+
     if (minutes_ago && minutes_ago > 0) {
       url += `&minutes_ago=${minutes_ago}`;
     }
-    
+
     if (base_currency && base_currency !== 'ALL') {
       url += `&base_currency=${base_currency}`;
     }
-    
+
     if (min_profit_pct !== null) {
       url += `&min_profit_pct=${min_profit_pct}`;
     }
-    
+
     const response = await client.get(url);
     return response.data;
   },
@@ -122,168 +122,6 @@ export const api = {
   // Get opportunity detail
   async getOpportunityDetail(id) {
     const response = await client.get(`/api/opportunities/${id}`);
-    return response.data;
-  },
-
-  // ==================== PAPER TRADING API ====================
-
-  // Get paper trading settings
-  async getPaperTradingSettings() {
-    const response = await client.get('/api/paper-trading/settings');
-    return response.data;
-  },
-
-  // Update paper trading settings
-  async updatePaperTradingSettings(settings) {
-    const response = await client.put('/api/paper-trading/settings', settings);
-    return response.data;
-  },
-
-  // Get paper wallet
-  async getPaperWallet() {
-    const response = await client.get('/api/paper-trading/wallet');
-    return response.data;
-  },
-
-  // Reset paper wallet
-  async resetPaperWallet(initialBalance = 100.0) {
-    const response = await client.post(`/api/paper-trading/wallet/reset?initial_balance=${initialBalance}`);
-    return response.data;
-  },
-
-  // Get paper trades
-  async getPaperTrades(limit = 50) {
-    const response = await client.get(`/api/paper-trading/trades?limit=${limit}`);
-    return response.data;
-  },
-
-  // Get paper trading stats
-  async getPaperTradingStats() {
-    const response = await client.get('/api/paper-trading/stats');
-    return response.data;
-  },
-
-  // Initialize paper trading
-  async initializePaperTrading() {
-    const response = await client.post('/api/paper-trading/initialize');
-    return response.data;
-  },
-
-  // Toggle paper trading on/off
-  async togglePaperTrading(isActive) {
-    const response = await client.post(`/api/paper-trading/toggle?is_active=${isActive}`);
-    return response.data;
-  },
-
-  // Test trade with specific opportunity (manual testing)
-  async testPaperTrade(opportunityId) {
-    const response = await client.post(`/api/paper-trading/test-trade?opportunity_id=${opportunityId}`);
-    return response.data;
-  },
-
-  // ==================== KILL SWITCH API ====================
-
-  // Get kill switch status
-  async getKillSwitchStatus() {
-    const response = await client.get('/api/kill-switch');
-    return response.data;
-  },
-
-  // Update kill switch settings
-  async updateKillSwitchSettings(settings) {
-    const response = await client.put('/api/kill-switch/settings', settings);
-    return response.data;
-  },
-
-  // Manually trigger kill switch
-  async triggerKillSwitch(reason = 'Manual trigger') {
-    const response = await client.post(`/api/kill-switch/trigger?reason=${encodeURIComponent(reason)}`);
-    return response.data;
-  },
-
-  // Reset kill switch
-  async resetKillSwitch() {
-    const response = await client.post('/api/kill-switch/reset');
-    return response.data;
-  },
-
-  // Get trading state (includes kill switch info)
-  async getTradingState() {
-    const response = await client.get('/api/trading-state');
-    return response.data;
-  },
-
-  // ==================== SHADOW MODE API ====================
-
-  // Get shadow mode status
-  async getShadowStatus() {
-    const response = await client.get('/api/shadow/status');
-    return response.data;
-  },
-
-  // Get Kraken account balance
-  async getKrakenBalance() {
-    const response = await client.get('/api/shadow/balance');
-    return response.data;
-  },
-
-  // Get shadow trades
-  async getShadowTrades(limit = 50) {
-    const response = await client.get(`/api/shadow/trades?limit=${limit}`);
-    return response.data;
-  },
-
-  // Get shadow trades history from database with pagination and filtering
-  async getShadowTradesHistory(options = {}) {
-    const { limit = 50, offset = 0, hours = 24, resultFilter = null, pathFilter = null } = options;
-    let url = `/api/shadow/trades/history?limit=${limit}&offset=${offset}&hours=${hours}`;
-    if (resultFilter) {
-      url += `&result_filter=${resultFilter}`;
-    }
-    if (pathFilter) {
-      url += `&path_filter=${encodeURIComponent(pathFilter)}`;
-    }
-    const response = await client.get(url);
-    return response.data;
-  },
-
-  // Get detailed shadow trades (with fees and slippage)
-  async getShadowTradesDetailed(options = {}) {
-    const { limit = 50, offset = 0, hours = 24, resultFilter = null, pathFilter = null } = options;
-    let url = `/api/shadow/trades/detailed?limit=${limit}&offset=${offset}&hours=${hours}`;
-    if (resultFilter) {
-      url += `&result_filter=${resultFilter}`;
-    }
-    if (pathFilter) {
-      url += `&path_filter=${encodeURIComponent(pathFilter)}`;
-    }
-    const response = await client.get(url);
-    return response.data;
-  },
-
-  // Get shadow trades stats
-  async getShadowTradesStats(hours = 24) {
-    const response = await client.get(`/api/shadow/trades/stats?hours=${hours}`);
-    return response.data;
-  },
-
-  // Get shadow accuracy report
-  async getShadowAccuracy() {
-    const response = await client.get('/api/shadow/accuracy');
-    return response.data;
-  },
-
-  // Execute shadow trade manually
-  async executeShadowTrade(path, tradeAmount = 10.0, expectedProfitPct = 0.1, slippagePct = 0.05) {
-    const response = await client.post(
-      `/api/shadow/execute?path=${encodeURIComponent(path)}&trade_amount=${tradeAmount}&expected_profit_pct=${expectedProfitPct}&slippage_pct=${slippagePct}`
-    );
-    return response.data;
-  },
-
-  // Set shadow mode (enable/disable)
-  async setShadowMode(enableShadow = true) {
-    const response = await client.post(`/api/shadow/mode?enable_shadow=${enableShadow}`);
     return response.data;
   },
 

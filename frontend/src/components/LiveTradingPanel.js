@@ -9,10 +9,10 @@ import { api } from '../services/api';
 export function LiveTradingPanel() {
   const [status, setStatus] = useState(null);
   const [config, setConfig] = useState(null);
+  // eslint-disable-next-line no-unused-vars
   const [options, setOptions] = useState(null);
   const [trades, setTrades] = useState([]);
   const [positions, setPositions] = useState(null);
-  const [shadowStatus, setShadowStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
@@ -53,12 +53,11 @@ export function LiveTradingPanel() {
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statusRes, configRes, tradesRes, positionsRes, shadowRes, opportunitiesRes, scannerRes] = await Promise.all([
+      const [statusRes, configRes, tradesRes, positionsRes, opportunitiesRes, scannerRes] = await Promise.all([
         api.getLiveStatus(),
         api.getLiveConfig(),
         api.getLiveTrades(500), // Fetch more for filtering
         api.getLivePositions(),
-        api.getShadowStatus(),
         api.getLiveOpportunities ? api.getLiveOpportunities(100, null, 24) : Promise.resolve({ opportunities: [] }),
         api.getLiveScannerStatus ? api.getLiveScannerStatus() : Promise.resolve(null),
       ]);
@@ -67,7 +66,6 @@ export function LiveTradingPanel() {
       setOptions(configRes.options);
       setTrades(tradesRes.trades || []);
       setPositions(positionsRes);
-      setShadowStatus(shadowRes);
       setOpportunities(opportunitiesRes?.opportunities || []);
       setScannerStatus(scannerRes);
       if (configRes.config?.custom_currencies) setCustomCurrencies(configRes.config.custom_currencies);
@@ -310,7 +308,7 @@ export function LiveTradingPanel() {
     if (value === null || value === undefined) return '--';
     const num = parseFloat(value);
     if (isNaN(num)) return '--';
-    return num >= 0 ? `+\$${num.toFixed(2)}` : `-\$${Math.abs(num).toFixed(2)}`;
+    return num >= 0 ? `+$${num.toFixed(2)}` : `-$${Math.abs(num).toFixed(2)}`;
   };
 
   const getThresholdWarning = () => {
@@ -343,10 +341,10 @@ export function LiveTradingPanel() {
   const totalTradeAmount = status?.state?.total_trade_amount || 0;
   const maxDailyLoss = config?.max_daily_loss || 30;
   const maxTotalLoss = config?.max_total_loss || 30;
-  const isConnected = shadowStatus?.connected;
-  const krakenBalance = shadowStatus?.kraken_balance_usd || 0;
-  const krakenBalances = shadowStatus?.kraken_balances || {};
-  
+  const isConnected = positions?.connected ?? false;
+  const krakenBalance = positions?.total_usd || 0;
+  const krakenPositions = positions?.positions || [];
+
   const totalTrades = status?.state?.total_trades || 0;
   const totalWins = status?.state?.total_wins || 0;
   const totalLosses = totalTrades - totalWins;
@@ -372,29 +370,48 @@ export function LiveTradingPanel() {
           <span className="status-dot"></span>
           <span className="status-text">{isConnected ? 'Connected to Kraken' : 'Not Connected'}</span>
         </div>
-        
+
         {isConnected && (
           <>
             <div className="info-card highlight">
-              <span className="label">Total Value (USD)</span>
+              <span className="label">Total Portfolio Value</span>
               <span className="value">${krakenBalance.toFixed(2)}</span>
             </div>
-            {Object.keys(krakenBalances).length > 0 && (
-              <div className="holdings-inline">
-                <span className="holdings-label">💰 Holdings</span>
-                <div className="holdings-items">
-                  {Object.entries(krakenBalances).map(([currency, amount]) => (
-                    <div key={currency} className="holding-item">
-                      <span className="currency">{currency.replace('XXBT', 'BTC').replace('XETH', 'ETH').replace('ZUSD', 'USD').replace('ZEUR', 'EUR')}</span>
-                      <span className="amount">{parseFloat(amount).toFixed(8)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </>
         )}
       </div>
+
+      {/* Portfolio Holdings */}
+      {isConnected && krakenPositions.length > 0 && (
+        <div className="holdings-section">
+          <h3>💰 Portfolio Holdings</h3>
+          <div className="holdings-grid">
+            {krakenPositions.map((pos) => (
+              <div key={pos.currency} className="holding-card">
+                <div className="holding-header">
+                  <span className="holding-currency">{pos.currency}</span>
+                  <span className="holding-usd">${pos.usd_value.toFixed(2)}</span>
+                </div>
+                <div className="holding-balance">
+                  {pos.balance < 0.0001
+                    ? pos.balance.toExponential(4)
+                    : pos.balance < 1
+                      ? pos.balance.toFixed(8)
+                      : pos.balance < 1000
+                        ? pos.balance.toFixed(4)
+                        : pos.balance.toLocaleString(undefined, {maximumFractionDigits: 2})
+                  }
+                </div>
+                {pos.usd_value > 0 && pos.currency !== 'USD' && (
+                  <div className="holding-price">
+                    @ ${(pos.usd_value / pos.balance).toFixed(2)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Performance */}
       <div className="performance-section">
@@ -968,6 +985,21 @@ export function LiveTradingPanel() {
         .holding-item { background: #1a1a2e; padding: 10px 15px; border-radius: 8px; text-align: center; min-width: 100px; }
         .holding-item .currency { display: block; color: #00d4aa; font-weight: 600; font-size: 0.9rem; margin-bottom: 3px; }
         .holding-item .amount { display: block; color: #fff; font-size: 0.85rem; }
+
+        /* Holdings Section */
+        .holdings-section { background: linear-gradient(135deg, #1a1a2e, #252545); border: 1px solid #3a3a5a; border-radius: 16px; padding: 25px; margin-bottom: 20px; }
+        .holdings-section h3 { color: #f0ad4e; margin-bottom: 20px; font-size: 1.2rem; }
+        .holdings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px; }
+        .holding-card { background: linear-gradient(135deg, #252542, #2a2a50); border: 1px solid #3a3a5a; border-radius: 12px; padding: 18px; transition: all 0.2s; }
+        .holding-card:hover { border-color: #00d4aa; transform: translateY(-2px); }
+        .holding-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .holding-currency { color: #00d4aa; font-weight: 700; font-size: 1.1rem; }
+        .holding-usd { color: #fff; font-weight: 600; font-size: 1rem; }
+        .holding-balance { color: #a0a0b0; font-size: 0.9rem; font-family: monospace; }
+        .holding-price { color: #888; font-size: 0.75rem; margin-top: 5px; }
+        @media (max-width: 768px) { .holdings-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 480px) { .holdings-grid { grid-template-columns: 1fr; } }
+
         .performance-section { background: linear-gradient(135deg, #1a1a2e, #252545); border: 1px solid #3a3a5a; border-radius: 16px; padding: 25px; margin-bottom: 20px; }
         .performance-section h3 { color: #00d4aa; margin-bottom: 20px; font-size: 1.2rem; }
         .performance-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; }
