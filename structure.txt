@@ -1,0 +1,80 @@
+.
+├── .env
+├── .env.example
+├── .env.live
+├── backend
+│   ├── Dockerfile
+│   ├── app
+│   │   ├── __init__.py
+│   │   ├── api
+│   │   │   ├── __init__.py
+│   │   │   ├── live_routes.py
+│   │   │   ├── routes.py
+│   │   │   └── websocket.py
+│   │   ├── core
+│   │   │   ├── __init__.py
+│   │   │   ├── config.py
+│   │   │   ├── database.py
+│   │   │   ├── kraken_client.py
+│   │   │   └── live_trading
+│   │   │       ├── __init__.py
+│   │   │       ├── circuit_breaker.py
+│   │   │       ├── config.py
+│   │   │       ├── executor.py
+│   │   │       ├── guard.py
+│   │   │       ├── manager.py
+│   │   │       └── scanner.py
+│   │   ├── main.py
+│   │   ├── models
+│   │   │   ├── __init__.py
+│   │   │   ├── live_trading.py
+│   │   │   ├── models.py
+│   │   │   └── schemas.py
+│   │   └── utils
+│   │       └── __init__.py
+│   └── requirements.txt
+├── db
+│   ├── init.sql
+│   └── migrations
+│       ├── 001_add_live_trading.sql
+│       ├── 002_add_total_trade_amount.sql
+│       ├── 006_live_opportunities.sql
+│       └── 007_add_partial_tracking.sql
+├── docker-compose.yml
+├── frontend
+│   ├── Dockerfile
+│   ├── package.json
+│   ├── public
+│   │   └── index.html
+│   └── src
+│       ├── App.js
+│       ├── components
+│       │   ├── Header.js
+│       │   ├── LiveTradeHistoryPanel.js
+│       │   ├── LiveTradingPanel.js
+│       │   ├── OpportunitiesPanel.js
+│       │   ├── OrderBookHealthPanel.js
+│       │   ├── PriceMatrix.js
+│       │   └── StatusBar.js
+│       ├── hooks
+│       │   └── useWebSocket.js
+│       ├── index.js
+│       ├── services
+│       │   └── api.js
+│       └── styles
+│           └── index.css
+├── rust_engine
+│   ├── Cargo.toml
+│   ├── pyproject.toml
+│   └── src
+│       ├── config_manager.rs
+│       ├── dispatcher.rs
+│       ├── lib.rs
+│       ├── order_book.rs
+│       ├── scanner.rs
+│       ├── slippage.rs
+│       ├── types.rs
+│       └── websocket.rs
+└── structure.txt
+
+18 directories, 59 files

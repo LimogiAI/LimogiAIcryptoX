@@ -135,6 +135,14 @@ async def get_status():
     return await manager.get_status()
 
 
+@router.get("/state")
+async def get_state():
+    """Get circuit breaker state (includes partial trade stats)"""
+    manager = get_manager()
+    state = manager.get_circuit_breaker_state()
+    return state.to_dict()
+
+
 @router.get("/circuit-breaker")
 async def get_circuit_breaker():
     """Get circuit breaker state"""
@@ -214,6 +222,33 @@ async def reset_all_stats(
     }
 
 
+@router.post("/reset-partial")
+async def reset_partial_stats(
+    confirm: bool = Query(default=False),
+):
+    """
+    Reset partial trade statistics only.
+    
+    Use when you've manually resolved partial trades outside the system.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail='Must confirm with confirm=true'
+        )
+    
+    manager = get_manager()
+    state = manager.circuit_breaker.reset_partial_stats()
+    
+    logger.warning("Partial trade stats were manually reset")
+    
+    return {
+        "success": True,
+        "message": "Partial trade statistics reset",
+        "state": state.to_dict(),
+    }
+
+
 # ==========================================
 # Trade Execution Endpoints
 # ==========================================
@@ -261,6 +296,23 @@ async def get_trades(
     }
 
 
+@router.get("/trades/partial")
+async def get_partial_trades():
+    """Get all unresolved partial trades"""
+    manager = get_manager()
+    
+    trades = manager.get_trades(
+        limit=100,
+        status='PARTIAL',
+        hours=720,  # 30 days
+    )
+    
+    return {
+        "count": len(trades),
+        "trades": trades,
+    }
+
+
 @router.get("/trades/{trade_id}")
 async def get_trade(trade_id: str):
     """Get a specific trade by ID"""
@@ -272,6 +324,115 @@ async def get_trade(trade_id: str):
         raise HTTPException(status_code=404, detail="Trade not found")
     
     return trade
+
+
+# ==========================================
+# Partial Trade Resolution Endpoints
+# ==========================================
+
+@router.post("/trades/{trade_id}/resolve")
+async def resolve_partial_trade(trade_id: str):
+    """
+    Resolve a PARTIAL trade by selling the held currency back to USD.
+    
+    This will:
+    1. Sell the held crypto for USD
+    2. Calculate actual P/L
+    3. Update the trade status to RESOLVED
+    4. Move from partial tracking to completed totals
+    """
+    manager = get_manager()
+    
+    # Get the trade first to validate
+    trade = manager.get_trade_by_id(trade_id)
+    
+    if not trade:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    
+    if trade.get('status') != 'PARTIAL':
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Trade is not PARTIAL (current status: {trade.get('status')})"
+        )
+    
+    if not trade.get('held_currency') or not trade.get('held_amount'):
+        raise HTTPException(
+            status_code=400,
+            detail="Trade has no held position to resolve"
+        )
+    
+    # Execute the resolution
+    result = await manager.executor.resolve_partial_trade(trade_id)
+    
+    if not result:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to resolve partial trade - check logs for details"
+        )
+    
+    # Get updated state
+    state = manager.get_circuit_breaker_state()
+    
+    return {
+        "success": True,
+        "message": f"Partial trade resolved: {trade_id}",
+        "resolution": result.to_dict(),
+        "state": state.to_dict(),
+    }
+
+
+@router.get("/trades/{trade_id}/resolve-preview")
+async def preview_resolve_partial_trade(trade_id: str):
+    """
+    Preview what would happen if we resolve a partial trade.
+    
+    Shows current held position and estimated USD value.
+    Does NOT execute any trades.
+    """
+    manager = get_manager()
+    
+    # Get the trade
+    trade = manager.get_trade_by_id(trade_id)
+    
+    if not trade:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    
+    if trade.get('status') != 'PARTIAL':
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Trade is not PARTIAL (current status: {trade.get('status')})"
+        )
+    
+    held_currency = trade.get('held_currency')
+    held_amount = trade.get('held_amount')
+    
+    if not held_currency or not held_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Trade has no held position"
+        )
+    
+    # Get current USD value
+    current_value = await manager.executor._get_usd_value(held_currency, held_amount)
+    
+    original_amount = trade.get('amount_in', 0)
+    snapshot_value = trade.get('held_value_usd')
+    
+    estimated_pl = (current_value or 0) - original_amount
+    snapshot_pl = (snapshot_value or 0) - original_amount if snapshot_value else None
+    
+    return {
+        "trade_id": trade_id,
+        "held_currency": held_currency,
+        "held_amount": held_amount,
+        "original_amount_usd": original_amount,
+        "snapshot_value_usd": snapshot_value,
+        "snapshot_pl": snapshot_pl,
+        "current_value_usd": current_value,
+        "estimated_pl": estimated_pl,
+        "estimated_pl_pct": (estimated_pl / original_amount * 100) if original_amount > 0 else 0,
+        "note": "These are estimates. Actual P/L will be determined after selling.",
+    }
 
 
 # ==========================================

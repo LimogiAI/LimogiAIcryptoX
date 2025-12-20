@@ -52,18 +52,25 @@ class LiveTradingState(Base):
 
     id = Column(Integer, primary_key=True, default=1)
     
-    # Daily stats
+    # Daily stats (completed trades only)
     daily_loss = Column(Float, nullable=False, default=0.0)
     daily_profit = Column(Float, nullable=False, default=0.0)
     daily_trades = Column(Integer, nullable=False, default=0)
     daily_wins = Column(Integer, nullable=False, default=0)
     
-    # Total stats
+    # Total stats (completed trades only)
     total_loss = Column(Float, nullable=False, default=0.0)
     total_profit = Column(Float, nullable=False, default=0.0)
     total_trades = Column(Integer, nullable=False, default=0)
     total_wins = Column(Integer, nullable=False, default=0)
-    total_trade_amount = Column(Float, nullable=False, default=0.0)  # Sum of all trade amounts
+    total_trade_amount = Column(Float, nullable=False, default=0.0)
+    
+    # ====== PARTIAL TRADE TRACKING (Option C) ======
+    # Separate tracking for unresolved partial trades
+    partial_trades = Column(Integer, nullable=False, default=0)          # Count of unresolved partials
+    partial_estimated_loss = Column(Float, nullable=False, default=0.0)  # Snapshot estimate (may be profit or loss)
+    partial_estimated_profit = Column(Float, nullable=False, default=0.0)
+    partial_trade_amount = Column(Float, nullable=False, default=0.0)    # Total $ stuck in partial trades
     
     # Circuit breaker
     is_circuit_broken = Column(Boolean, nullable=False, default=False)
@@ -100,7 +107,7 @@ class LiveTrade(Base):
     profit_loss = Column(Float, nullable=True)
     profit_loss_pct = Column(Float, nullable=True)
     
-    # Status
+    # Status: PENDING, EXECUTING, COMPLETED, PARTIAL, FAILED, RESOLVED
     status = Column(String(20), nullable=False, default='PENDING')
     current_leg = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
@@ -108,6 +115,12 @@ class LiveTrade(Base):
     # Held position (if partial failure)
     held_currency = Column(String(20), nullable=True)
     held_amount = Column(Float, nullable=True)
+    held_value_usd = Column(Float, nullable=True)  # Snapshot USD value at time of failure
+    
+    # Resolution tracking (for PARTIAL trades)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_amount_usd = Column(Float, nullable=True)  # Actual USD received when sold
+    resolution_trade_id = Column(String(100), nullable=True)  # ID of the sell trade
     
     # Kraken references
     order_ids = Column(JSONB, default=[])

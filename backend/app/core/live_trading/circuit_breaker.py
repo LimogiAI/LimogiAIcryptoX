@@ -3,6 +3,8 @@ Circuit Breaker for Live Trading
 
 Monitors losses and automatically stops trading when limits are exceeded.
 This is a critical safety component.
+
+Option C: Partial trades tracked separately until resolved.
 """
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ class CircuitBreakerState:
     broken_at: Optional[datetime] = None
     broken_reason: Optional[str] = None
     
+    # Completed trades stats
     daily_loss: float = 0.0
     daily_profit: float = 0.0
     daily_trades: int = 0
@@ -26,7 +29,13 @@ class CircuitBreakerState:
     total_profit: float = 0.0
     total_trades: int = 0
     total_wins: int = 0
-    total_trade_amount: float = 0.0  # Sum of all trade amounts
+    total_trade_amount: float = 0.0
+    
+    # Partial trades stats (unresolved)
+    partial_trades: int = 0
+    partial_estimated_loss: float = 0.0
+    partial_estimated_profit: float = 0.0
+    partial_trade_amount: float = 0.0
     
     last_trade_at: Optional[datetime] = None
     last_daily_reset: Optional[datetime] = None
@@ -40,6 +49,7 @@ class CircuitBreakerState:
             'is_broken': self.is_broken,
             'broken_at': self.broken_at.isoformat() if self.broken_at else None,
             'broken_reason': self.broken_reason,
+            # Completed trades
             'daily_loss': self.daily_loss,
             'daily_profit': self.daily_profit,
             'daily_net': self.daily_profit - self.daily_loss,
@@ -53,6 +63,13 @@ class CircuitBreakerState:
             'total_wins': self.total_wins,
             'total_trade_amount': self.total_trade_amount,
             'total_win_rate': (self.total_wins / self.total_trades * 100) if self.total_trades > 0 else 0,
+            # Partial trades (unresolved)
+            'partial_trades': self.partial_trades,
+            'partial_estimated_loss': self.partial_estimated_loss,
+            'partial_estimated_profit': self.partial_estimated_profit,
+            'partial_estimated_net': self.partial_estimated_profit - self.partial_estimated_loss,
+            'partial_trade_amount': self.partial_trade_amount,
+            # Timing
             'last_trade_at': self.last_trade_at.isoformat() if self.last_trade_at else None,
             'is_executing': self.is_executing,
             'current_trade_id': self.current_trade_id,
@@ -67,6 +84,9 @@ class CircuitBreaker:
     - Daily loss exceeds max_daily_loss
     - Total loss exceeds max_total_loss
     - Manual trigger
+    
+    Note: Only COMPLETED trades count toward loss limits.
+    PARTIAL trades are tracked separately until resolved.
     """
     
     def __init__(self, db_session_factory, config_manager):
@@ -107,6 +127,12 @@ class CircuitBreaker:
                 total_trades=state.total_trades,
                 total_wins=state.total_wins,
                 total_trade_amount=getattr(state, 'total_trade_amount', 0.0),
+                # Partial trades
+                partial_trades=getattr(state, 'partial_trades', 0),
+                partial_estimated_loss=getattr(state, 'partial_estimated_loss', 0.0),
+                partial_estimated_profit=getattr(state, 'partial_estimated_profit', 0.0),
+                partial_trade_amount=getattr(state, 'partial_trade_amount', 0.0),
+                # Timing
                 last_trade_at=state.last_trade_at,
                 last_daily_reset=state.last_daily_reset,
                 is_executing=state.is_executing,
@@ -175,7 +201,7 @@ class CircuitBreaker:
         return True, None
     
     def record_trade_result(self, profit_loss: float, is_win: bool, trade_id: str, trade_amount: float = 0.0):
-        """Record the result of a completed trade"""
+        """Record the result of a COMPLETED trade"""
         db = self._get_db()
         try:
             from app.models.live_trading import LiveTradingState
@@ -195,7 +221,7 @@ class CircuitBreaker:
             state.daily_trades += 1
             state.total_trades += 1
             
-            # Track total trade amount (persisted in DB)
+            # Track total trade amount
             if hasattr(state, 'total_trade_amount'):
                 state.total_trade_amount = (state.total_trade_amount or 0.0) + trade_amount
             
@@ -209,7 +235,113 @@ class CircuitBreaker:
             
             db.commit()
             
-            logger.info(f"Recorded trade result: {'+' if profit_loss >= 0 else ''}${profit_loss:.2f} ({'WIN' if is_win else 'LOSS'}), amount: ${trade_amount:.2f}")
+            logger.info(f"Recorded COMPLETED trade: {'+' if profit_loss >= 0 else ''}${profit_loss:.2f} ({'WIN' if is_win else 'LOSS'}), amount: ${trade_amount:.2f}")
+            
+            # Check limits after recording
+            config = self.config_manager.get_settings()
+            
+            if state.daily_loss >= config.max_daily_loss:
+                self._trigger(f"Daily loss limit reached: ${state.daily_loss:.2f}")
+            elif state.total_loss >= config.max_total_loss:
+                self._trigger(f"Total loss limit reached: ${state.total_loss:.2f}")
+            
+        finally:
+            db.close()
+    
+    def record_partial_trade(self, trade_id: str, trade_amount: float, held_currency: str, 
+                              held_amount: float, estimated_value_usd: float):
+        """
+        Record a PARTIAL trade (stuck holding crypto).
+        
+        This is tracked separately and NOT counted in totals until resolved.
+        """
+        db = self._get_db()
+        try:
+            from app.models.live_trading import LiveTradingState
+            
+            state = db.query(LiveTradingState).filter(LiveTradingState.id == 1).first()
+            if not state:
+                return
+            
+            # Calculate estimated P/L based on snapshot value
+            estimated_pl = estimated_value_usd - trade_amount
+            
+            # Update partial stats
+            state.partial_trades = (state.partial_trades or 0) + 1
+            state.partial_trade_amount = (state.partial_trade_amount or 0.0) + trade_amount
+            
+            if estimated_pl >= 0:
+                state.partial_estimated_profit = (state.partial_estimated_profit or 0.0) + estimated_pl
+            else:
+                state.partial_estimated_loss = (state.partial_estimated_loss or 0.0) + abs(estimated_pl)
+            
+            state.last_trade_at = datetime.utcnow()
+            state.is_executing = False
+            state.current_trade_id = None
+            
+            db.commit()
+            
+            logger.warning(
+                f"Recorded PARTIAL trade {trade_id}: "
+                f"${trade_amount:.2f} → {held_amount:.6f} {held_currency} "
+                f"(estimated ${estimated_value_usd:.2f}, P/L: {'+' if estimated_pl >= 0 else ''}${estimated_pl:.2f})"
+            )
+            
+        finally:
+            db.close()
+    
+    def resolve_partial_trade(self, trade_id: str, original_amount: float, 
+                               estimated_pl: float, actual_amount_usd: float):
+        """
+        Resolve a PARTIAL trade after selling the held crypto.
+        
+        Moves from partial tracking to completed totals with ACTUAL P/L.
+        """
+        db = self._get_db()
+        try:
+            from app.models.live_trading import LiveTradingState, LiveTrade
+            
+            state = db.query(LiveTradingState).filter(LiveTradingState.id == 1).first()
+            if not state:
+                return
+            
+            # Calculate actual P/L
+            actual_pl = actual_amount_usd - original_amount
+            is_win = actual_pl >= 0
+            
+            # Remove from partial tracking
+            state.partial_trades = max(0, (state.partial_trades or 1) - 1)
+            state.partial_trade_amount = max(0, (state.partial_trade_amount or 0.0) - original_amount)
+            
+            # Remove estimated P/L
+            if estimated_pl >= 0:
+                state.partial_estimated_profit = max(0, (state.partial_estimated_profit or 0.0) - estimated_pl)
+            else:
+                state.partial_estimated_loss = max(0, (state.partial_estimated_loss or 0.0) - abs(estimated_pl))
+            
+            # Add to completed totals with ACTUAL P/L
+            if actual_pl >= 0:
+                state.daily_profit += actual_pl
+                state.total_profit += actual_pl
+            else:
+                state.daily_loss += abs(actual_pl)
+                state.total_loss += abs(actual_pl)
+            
+            state.daily_trades += 1
+            state.total_trades += 1
+            state.total_trade_amount = (state.total_trade_amount or 0.0) + original_amount
+            
+            if is_win:
+                state.daily_wins += 1
+                state.total_wins += 1
+            
+            db.commit()
+            
+            logger.info(
+                f"Resolved PARTIAL trade {trade_id}: "
+                f"Estimated: {'+' if estimated_pl >= 0 else ''}${estimated_pl:.2f} → "
+                f"Actual: {'+' if actual_pl >= 0 else ''}${actual_pl:.2f} ({'WIN' if is_win else 'LOSS'})"
+            )
             
             # Check limits after recording
             config = self.config_manager.get_settings()
@@ -356,6 +488,12 @@ class CircuitBreaker:
                 state.total_wins = 0
                 if hasattr(state, 'total_trade_amount'):
                     state.total_trade_amount = 0.0
+                # Also reset partial stats
+                state.partial_trades = 0
+                state.partial_estimated_loss = 0.0
+                state.partial_estimated_profit = 0.0
+                state.partial_trade_amount = 0.0
+                
                 state.last_daily_reset = datetime.utcnow()
                 state.is_circuit_broken = False
                 state.circuit_broken_at = None
@@ -363,6 +501,27 @@ class CircuitBreaker:
                 db.commit()
             
             logger.warning("All live trading stats manually reset")
+            
+            return self.get_state(force_refresh=True)
+            
+        finally:
+            db.close()
+    
+    def reset_partial_stats(self) -> CircuitBreakerState:
+        """Reset partial trade tracking only (use with caution)"""
+        db = self._get_db()
+        try:
+            from app.models.live_trading import LiveTradingState
+            
+            state = db.query(LiveTradingState).filter(LiveTradingState.id == 1).first()
+            if state:
+                state.partial_trades = 0
+                state.partial_estimated_loss = 0.0
+                state.partial_estimated_profit = 0.0
+                state.partial_trade_amount = 0.0
+                db.commit()
+            
+            logger.warning("Partial trade stats manually reset")
             
             return self.get_state(force_refresh=True)
             

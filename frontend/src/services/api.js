@@ -185,6 +185,12 @@ export const api = {
     return response.data;
   },
 
+  // Get live trading state (circuit breaker with partial stats)
+  async getLiveState() {
+    const response = await client.get('/api/live/state');
+    return response.data;
+  },
+
   // Get live trading config
   async getLiveConfig() {
     const response = await client.get('/api/live/config');
@@ -220,9 +226,27 @@ export const api = {
     return response.data;
   },
 
+  // Get partial trades only
+  async getLivePartialTrades() {
+    const response = await client.get('/api/live/trades/partial');
+    return response.data;
+  },
+
   // Get single live trade
   async getLiveTrade(tradeId) {
     const response = await client.get(`/api/live/trades/${tradeId}`);
+    return response.data;
+  },
+
+  // Preview resolving a partial trade
+  async previewResolvePartial(tradeId) {
+    const response = await client.get(`/api/live/trades/${tradeId}/resolve-preview`);
+    return response.data;
+  },
+
+  // Resolve a partial trade (sell held crypto back to USD)
+  async resolvePartialTrade(tradeId) {
+    const response = await client.post(`/api/live/trades/${tradeId}/resolve`);
     return response.data;
   },
 
@@ -259,6 +283,12 @@ export const api = {
   // Reset all stats
   async resetLiveAll(confirm = false, confirmText = '') {
     const response = await client.post(`/api/live/reset-all?confirm=${confirm}&confirm_text=${encodeURIComponent(confirmText)}`);
+    return response.data;
+  },
+
+  // Reset partial stats only
+  async resetLivePartial(confirm = false) {
+    const response = await client.post(`/api/live/reset-partial?confirm=${confirm}`);
     return response.data;
   },
 

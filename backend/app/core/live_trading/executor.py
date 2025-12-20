@@ -3,6 +3,8 @@ Live Executor - Executes Real Trades on Kraken
 
 This is where the actual trading happens.
 Handles sequential leg execution with fill verification.
+
+Option C: Partial trades tracked separately with snapshot value.
 """
 import asyncio
 import uuid
@@ -94,14 +96,15 @@ class TradeExecution:
     profit_loss: Optional[float] = None
     profit_loss_pct: Optional[float] = None
     
-    # Status
-    status: str = 'PENDING'  # PENDING, EXECUTING, COMPLETED, PARTIAL, FAILED
+    # Status: PENDING, EXECUTING, COMPLETED, PARTIAL, FAILED, RESOLVED
+    status: str = 'PENDING'
     current_leg: int = 0
     error_message: Optional[str] = None
     
     # Held position if partial
     held_currency: Optional[str] = None
     held_amount: Optional[float] = None
+    held_value_usd: Optional[float] = None  # Snapshot USD value
     
     # Leg details
     leg_executions: List[LegExecution] = field(default_factory=list)
@@ -126,6 +129,7 @@ class TradeExecution:
             'error_message': self.error_message,
             'held_currency': self.held_currency,
             'held_amount': self.held_amount,
+            'held_value_usd': self.held_value_usd,
             'leg_executions': [leg.to_dict() for leg in self.leg_executions],
             'order_ids': self.order_ids,
             'started_at': self.started_at.isoformat() if self.started_at else None,
@@ -150,7 +154,8 @@ class LiveExecutor:
     
     On failure:
     - HOLD position (Option B)
-    - Alert user
+    - Calculate snapshot USD value
+    - Track as PARTIAL (Option C)
     - Do NOT attempt reversal
     """
     
@@ -264,14 +269,22 @@ class LiveExecutor:
                     execution.order_ids.append(leg_result.order_id)
                 
                 if not leg_result.success:
-                    # Leg failed - HOLD position (Option B)
+                    # Leg failed - HOLD position
                     execution.status = 'PARTIAL' if i > 0 else 'FAILED'
                     execution.error_message = f"Leg {i + 1} failed: {leg_result.error}"
                     execution.held_currency = current_currency
                     execution.held_amount = current_amount
                     
+                    # Get snapshot USD value for the held currency
+                    if i > 0:  # Only if we have something (not first leg failure)
+                        execution.held_value_usd = await self._get_usd_value(
+                            current_currency, current_amount
+                        )
+                    
                     logger.error(f"❌ Trade {trade_id} failed at leg {i + 1}: {leg_result.error}")
                     logger.warning(f"⚠️ HOLDING {current_amount:.6f} {current_currency}")
+                    if execution.held_value_usd:
+                        logger.warning(f"⚠️ Snapshot USD value: ${execution.held_value_usd:.2f}")
                     
                     break
                 
@@ -302,8 +315,9 @@ class LiveExecutor:
             # Mark execution complete
             self.circuit_breaker.mark_execution_complete(trade_id)
             
-            # Record result in circuit breaker
-            if execution.profit_loss is not None:
+            # Record result based on status
+            if execution.status == 'COMPLETED':
+                # Completed trade - record in totals
                 is_win = execution.profit_loss >= 0
                 self.circuit_breaker.record_trade_result(
                     profit_loss=execution.profit_loss,
@@ -311,11 +325,143 @@ class LiveExecutor:
                     trade_id=trade_id,
                     trade_amount=amount
                 )
+            elif execution.status == 'PARTIAL':
+                # Partial trade - track separately with snapshot value
+                estimated_value = execution.held_value_usd or 0.0
+                self.circuit_breaker.record_partial_trade(
+                    trade_id=trade_id,
+                    trade_amount=amount,
+                    held_currency=execution.held_currency,
+                    held_amount=execution.held_amount,
+                    estimated_value_usd=estimated_value
+                )
+            # FAILED trades (first leg failed) - nothing to record
             
             # Save to database
             await self._save_trade(execution, opportunity_profit_pct)
         
         return execution
+    
+    async def _get_usd_value(self, currency: str, amount: float) -> Optional[float]:
+        """Get USD value of a currency amount (snapshot price)"""
+        if currency in ('USD', 'ZUSD'):
+            return amount
+        
+        try:
+            # Try direct USD pair
+            pair = f"{CURRENCY_MAP.get(currency, currency)}USD"
+            ticker = await self.kraken_client.get_ticker(pair)
+            
+            if ticker:
+                pair_data = list(ticker.values())[0]
+                bid_price = float(pair_data.get('b', [0])[0])
+                if bid_price > 0:
+                    return amount * bid_price
+            
+            # Try ZUSD pair
+            pair = f"{CURRENCY_MAP.get(currency, currency)}ZUSD"
+            ticker = await self.kraken_client.get_ticker(pair)
+            
+            if ticker:
+                pair_data = list(ticker.values())[0]
+                bid_price = float(pair_data.get('b', [0])[0])
+                if bid_price > 0:
+                    return amount * bid_price
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Failed to get USD value for {currency}: {e}")
+            return None
+    
+    async def resolve_partial_trade(self, trade_id: str) -> Optional[TradeExecution]:
+        """
+        Resolve a PARTIAL trade by selling the held currency back to USD.
+        
+        Returns the resolution trade execution, or None if failed.
+        """
+        db = self._get_db()
+        try:
+            from app.models.live_trading import LiveTrade
+            
+            # Get the partial trade
+            trade = db.query(LiveTrade).filter(
+                LiveTrade.trade_id == trade_id,
+                LiveTrade.status == 'PARTIAL'
+            ).first()
+            
+            if not trade:
+                logger.error(f"Partial trade {trade_id} not found")
+                return None
+            
+            if not trade.held_currency or not trade.held_amount:
+                logger.error(f"Trade {trade_id} has no held position")
+                return None
+            
+            # Execute sell to USD
+            sell_path = f"{trade.held_currency} → USD"
+            resolution_id = f"RESOLVE-{uuid.uuid4().hex[:8].upper()}"
+            
+            logger.info(f"🔄 Resolving partial trade {trade_id}: selling {trade.held_amount:.6f} {trade.held_currency}")
+            
+            # Execute single leg sell
+            leg_result = await self._execute_leg(
+                leg_number=1,
+                from_currency=trade.held_currency,
+                to_currency='USD',
+                amount=trade.held_amount,
+            )
+            
+            if leg_result.success:
+                actual_usd = leg_result.output_amount
+                original_amount = trade.amount_in
+                estimated_pl = (trade.held_value_usd or 0) - original_amount
+                
+                # Update the original trade
+                trade.status = 'RESOLVED'
+                trade.resolved_at = datetime.utcnow()
+                trade.resolved_amount_usd = actual_usd
+                trade.resolution_trade_id = resolution_id
+                trade.profit_loss = actual_usd - original_amount
+                trade.profit_loss_pct = (trade.profit_loss / original_amount) * 100 if original_amount > 0 else 0
+                trade.amount_out = actual_usd
+                
+                db.commit()
+                
+                # Move from partial to completed in circuit breaker
+                self.circuit_breaker.resolve_partial_trade(
+                    trade_id=trade_id,
+                    original_amount=original_amount,
+                    estimated_pl=estimated_pl,
+                    actual_amount_usd=actual_usd
+                )
+                
+                logger.info(
+                    f"✅ Resolved {trade_id}: "
+                    f"${original_amount:.2f} → ${actual_usd:.2f} "
+                    f"({'+' if trade.profit_loss >= 0 else ''}{trade.profit_loss_pct:.2f}%)"
+                )
+                
+                return TradeExecution(
+                    trade_id=resolution_id,
+                    path=sell_path,
+                    legs=1,
+                    amount_in=trade.held_amount,
+                    amount_out=actual_usd,
+                    profit_loss=trade.profit_loss,
+                    profit_loss_pct=trade.profit_loss_pct,
+                    status='COMPLETED',
+                )
+            else:
+                logger.error(f"❌ Failed to resolve {trade_id}: {leg_result.error}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error resolving partial trade: {e}")
+            db.rollback()
+            return None
+        finally:
+            db.close()
     
     async def _execute_leg(
         self,
@@ -325,10 +471,6 @@ class LiveExecutor:
         amount: float,
     ) -> LegExecution:
         """Execute a single leg of the arbitrage"""
-        config = self.config_manager.get_settings()
-        max_retries = config.max_retries_per_leg
-        timeout = config.order_timeout_seconds
-        
         pair, side = self._determine_pair_and_side(from_currency, to_currency)
         
         leg = LegExecution(
@@ -342,50 +484,55 @@ class LiveExecutor:
             started_at=datetime.utcnow(),
         )
         
-        logger.info(f"  Leg {leg_number}: {from_currency} → {to_currency} ({side} on {pair})")
+        config = self.config_manager.get_settings()
+        max_retries = config.max_retries_per_leg
+        timeout = config.order_timeout_seconds
+        
+        logger.info(f"  Leg {leg_number}: {from_currency} → {to_currency} ({pair} {side})")
         
         for attempt in range(max_retries + 1):
             leg.retries = attempt
             
             try:
-                # Get expected price BEFORE placing order (for slippage calculation)
-                expected_price = await self._get_expected_price(pair, side)
-                leg.expected_price = expected_price
+                # Get expected price before order
+                leg.expected_price = await self._get_expected_price(pair, side)
                 
-                # Calculate volume for order
+                # Calculate volume
                 volume = await self._calculate_volume(pair, side, amount, from_currency)
-                
                 if volume <= 0:
-                    leg.error = "Could not calculate valid volume"
+                    leg.error = "Could not calculate volume"
                     continue
                 
-                # Place market order
+                logger.info(f"    Placing {side} order: {volume:.8f} {pair}")
+                
+                # Place order
                 order_result = await self._place_order(pair, side, volume)
                 
                 if not order_result.get('success'):
-                    leg.error = order_result.get('error', 'Order placement failed')
-                    logger.warning(f"    Attempt {attempt + 1}: {leg.error}")
+                    leg.error = order_result.get('error', 'Order failed')
+                    logger.warning(f"    Order failed: {leg.error}")
                     continue
                 
-                leg.order_id = order_result.get('order_id')
+                leg.order_id = order_result['order_id']
                 
                 # Wait for fill
                 fill_result = await self._wait_for_fill(leg.order_id, timeout)
                 
                 if not fill_result.get('filled'):
                     leg.error = fill_result.get('error', 'Order not filled')
-                    logger.warning(f"    Attempt {attempt + 1}: {leg.error}")
-                    
-                    # Try to cancel unfilled order
+                    # Try to cancel
                     await self._cancel_order(leg.order_id)
+                    logger.warning(f"    Fill failed: {leg.error}")
                     continue
                 
                 # Success!
                 leg.success = True
-                leg.executed_price = fill_result.get('price')
-                leg.executed_amount = fill_result.get('volume')
-                leg.fee = fill_result.get('fee')
-                leg.fee_currency = fill_result.get('fee_currency')
+                leg.executed_price = fill_result['price']
+                leg.executed_amount = fill_result['volume']
+                leg.fee = fill_result.get('fee', 0)
+                leg.fee_currency = fill_result.get('fee_currency', 'USD')
+                
+                logger.info(f"    Filled: {leg.executed_amount:.8f} @ {leg.executed_price:.6f}")
                 
                 # Calculate slippage (comparing expected vs actual price)
                 if leg.expected_price and leg.executed_price and leg.expected_price > 0:
@@ -583,6 +730,7 @@ class LiveExecutor:
                 error_message=execution.error_message,
                 held_currency=execution.held_currency,
                 held_amount=execution.held_amount,
+                held_value_usd=execution.held_value_usd,
                 order_ids=execution.order_ids,
                 leg_fills=[leg.to_dict() for leg in execution.leg_executions],
                 started_at=execution.started_at,

@@ -21,6 +21,12 @@ export function LiveTradingPanel() {
   const [opportunities, setOpportunities] = useState([]);
   const [scannerStatus, setScannerStatus] = useState(null);
   
+  // Partial trades tracking
+  const [partialTrades, setPartialTrades] = useState([]);
+  const [resolvingTradeId, setResolvingTradeId] = useState(null);
+  const [resolvePreview, setResolvePreview] = useState(null);
+  const [showResolveModal, setShowResolveModal] = useState(false);
+  
   const [showEnableModal, setShowEnableModal] = useState(false);
   const [pendingConfig, setPendingConfig] = useState({});
   const [showCustomCurrencies, setShowCustomCurrencies] = useState(false);
@@ -53,13 +59,14 @@ export function LiveTradingPanel() {
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statusRes, configRes, tradesRes, positionsRes, opportunitiesRes, scannerRes] = await Promise.all([
+      const [statusRes, configRes, tradesRes, positionsRes, opportunitiesRes, scannerRes, partialRes] = await Promise.all([
         api.getLiveStatus(),
         api.getLiveConfig(),
         api.getLiveTrades(500), // Fetch more for filtering
         api.getLivePositions(),
         api.getLiveOpportunities ? api.getLiveOpportunities(100, null, 24) : Promise.resolve({ opportunities: [] }),
         api.getLiveScannerStatus ? api.getLiveScannerStatus() : Promise.resolve(null),
+        api.getLivePartialTrades ? api.getLivePartialTrades() : Promise.resolve({ trades: [] }),
       ]);
       setStatus(statusRes);
       setConfig(configRes.config);
@@ -68,6 +75,7 @@ export function LiveTradingPanel() {
       setPositions(positionsRes);
       setOpportunities(opportunitiesRes?.opportunities || []);
       setScannerStatus(scannerRes);
+      setPartialTrades(partialRes?.trades || []);
       if (configRes.config?.custom_currencies) setCustomCurrencies(configRes.config.custom_currencies);
       if (configRes.config?.base_currency === 'CUSTOM') setShowCustomCurrencies(true);
     } catch (err) {
@@ -175,6 +183,40 @@ export function LiveTradingPanel() {
     } catch (err) {
       showToast('Failed to reset daily stats', 'error');
     }
+  };
+
+  // Partial trade handlers
+  const handlePreviewResolve = async (tradeId) => {
+    try {
+      setResolvingTradeId(tradeId);
+      const preview = await api.previewResolvePartial(tradeId);
+      setResolvePreview(preview);
+      setShowResolveModal(true);
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Failed to preview resolution', 'error');
+      setResolvingTradeId(null);
+    }
+  };
+
+  const handleResolvePartial = async () => {
+    if (!resolvingTradeId) return;
+    try {
+      const result = await api.resolvePartialTrade(resolvingTradeId);
+      showToast(`Trade resolved: ${result.resolution?.profit_loss >= 0 ? '+' : ''}$${result.resolution?.profit_loss?.toFixed(2)}`, 
+        result.resolution?.profit_loss >= 0 ? 'success' : 'warning');
+      setShowResolveModal(false);
+      setResolvePreview(null);
+      setResolvingTradeId(null);
+      fetchData();
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Failed to resolve trade', 'error');
+    }
+  };
+
+  const handleCancelResolve = () => {
+    setShowResolveModal(false);
+    setResolvePreview(null);
+    setResolvingTradeId(null);
   };
 
   // Toggle expanded row
@@ -348,6 +390,13 @@ export function LiveTradingPanel() {
   const totalTrades = status?.state?.total_trades || 0;
   const totalWins = status?.state?.total_wins || 0;
   const totalLosses = totalTrades - totalWins;
+  
+  // Partial trade stats
+  const partialCount = status?.state?.partial_trades || 0;
+  const partialEstimatedLoss = status?.state?.partial_estimated_loss || 0;
+  const partialEstimatedProfit = status?.state?.partial_estimated_profit || 0;
+  const partialTradeAmount = status?.state?.partial_trade_amount || 0;
+  const partialEstimatedNet = partialEstimatedProfit - partialEstimatedLoss;
 
   return (
     <div className="panel live-trading-panel">
@@ -425,6 +474,80 @@ export function LiveTradingPanel() {
           <div className="perf-card"><span className="label">Total Trade Amount</span><span className="value">${totalTradeAmount.toFixed(2)}</span></div>
         </div>
       </div>
+
+      {/* Partial Trades Section */}
+      {(partialCount > 0 || partialTrades.length > 0) && (
+        <div className="partial-section">
+          <h3>⚠️ Partial Trades (Unresolved)</h3>
+          <div className="partial-summary">
+            <div className="partial-stat">
+              <span className="label">Unresolved</span>
+              <span className="value warning">{partialCount}</span>
+            </div>
+            <div className="partial-stat">
+              <span className="label">Stuck Amount</span>
+              <span className="value">${partialTradeAmount.toFixed(2)}</span>
+            </div>
+            <div className="partial-stat">
+              <span className="label">Est. P/L</span>
+              <span className={`value ${partialEstimatedNet >= 0 ? 'positive' : 'negative'}`}>
+                {partialEstimatedNet >= 0 ? '+' : ''}${partialEstimatedNet.toFixed(2)}
+              </span>
+            </div>
+          </div>
+          
+          {partialTrades.length > 0 && (
+            <div className="partial-trades-list">
+              <table className="partial-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Path</th>
+                    <th>Original</th>
+                    <th>Holding</th>
+                    <th>Est. Value</th>
+                    <th>Est. P/L</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {partialTrades.map((trade) => {
+                    const estPL = (trade.held_value_usd || 0) - (trade.amount_in || 0);
+                    return (
+                      <tr key={trade.trade_id}>
+                        <td className="time-cell">{formatTimestamp(trade.started_at)}</td>
+                        <td><code>{trade.path}</code></td>
+                        <td>${trade.amount_in?.toFixed(2)}</td>
+                        <td className="holding-cell">
+                          {trade.held_amount?.toFixed(6)} {trade.held_currency}
+                        </td>
+                        <td>${trade.held_value_usd?.toFixed(2) || '--'}</td>
+                        <td className={estPL >= 0 ? 'positive' : 'negative'}>
+                          {estPL >= 0 ? '+' : ''}${estPL.toFixed(2)}
+                        </td>
+                        <td>
+                          <button 
+                            className="resolve-btn"
+                            onClick={() => handlePreviewResolve(trade.trade_id)}
+                            disabled={resolvingTradeId === trade.trade_id}
+                          >
+                            {resolvingTradeId === trade.trade_id ? '...' : '🔄 Resolve'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          
+          <p className="partial-hint">
+            💡 Partial trades occur when a multi-leg trade fails mid-execution. 
+            Click "Resolve" to sell the held crypto back to USD.
+          </p>
+        </div>
+      )}
 
       {/* Controls */}
       <div className="live-controls-section">
@@ -966,6 +1089,60 @@ export function LiveTradingPanel() {
         </div>
       )}
 
+      {/* Resolve Partial Trade Modal */}
+      {showResolveModal && resolvePreview && (
+        <div className="modal-overlay">
+          <div className="resolve-modal">
+            <h2>🔄 Resolve Partial Trade</h2>
+            <p className="modal-subtitle">Sell held crypto back to USD</p>
+            
+            <div className="resolve-summary">
+              <div className="resolve-row">
+                <span className="resolve-label">Trade ID</span>
+                <span className="resolve-value">{resolvePreview.trade_id?.slice(-12)}</span>
+              </div>
+              <div className="resolve-row">
+                <span className="resolve-label">Holding</span>
+                <span className="resolve-value highlight">
+                  {resolvePreview.held_amount?.toFixed(6)} {resolvePreview.held_currency}
+                </span>
+              </div>
+              <div className="resolve-row">
+                <span className="resolve-label">Original Amount</span>
+                <span className="resolve-value">${resolvePreview.original_amount_usd?.toFixed(2)}</span>
+              </div>
+              <div className="resolve-row">
+                <span className="resolve-label">Snapshot Value (at failure)</span>
+                <span className="resolve-value">${resolvePreview.snapshot_value_usd?.toFixed(2) || '--'}</span>
+              </div>
+              <div className="resolve-row">
+                <span className="resolve-label">Current Value</span>
+                <span className="resolve-value highlight">${resolvePreview.current_value_usd?.toFixed(2) || '--'}</span>
+              </div>
+              <div className="resolve-row big">
+                <span className="resolve-label">Estimated P/L</span>
+                <span className={`resolve-value ${resolvePreview.estimated_pl >= 0 ? 'positive' : 'negative'}`}>
+                  {resolvePreview.estimated_pl >= 0 ? '+' : ''}${resolvePreview.estimated_pl?.toFixed(2)} 
+                  ({resolvePreview.estimated_pl_pct?.toFixed(2)}%)
+                </span>
+              </div>
+            </div>
+            
+            <div className="resolve-warning">
+              <p>⚠️ This will execute a market order to sell {resolvePreview.held_currency} → USD</p>
+              <p>Actual P/L may differ due to slippage and fees.</p>
+            </div>
+            
+            <div className="modal-buttons">
+              <button className="cancel-btn" onClick={handleCancelResolve}>Cancel</button>
+              <button className="resolve-confirm-btn" onClick={handleResolvePartial}>
+                ✓ Sell to USD
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         .live-trading-panel { padding: 20px; background: linear-gradient(180deg, #0d0d1a 0%, #1a1a2e 100%); min-height: calc(100vh - 200px); }
         .top-section { display: flex; align-items: center; gap: 20px; padding: 20px; background: linear-gradient(135deg, #1a1a2e, #252545); border: 1px solid #3a3a5a; border-radius: 12px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -1008,6 +1185,48 @@ export function LiveTradingPanel() {
         .perf-card .value { display: block; font-size: 1.4rem; font-weight: 700; color: #fff; }
         .perf-card .value.positive { color: #00d4aa; }
         .perf-card .value.negative { color: #ff6b6b; }
+        
+        /* Partial Trades Section */
+        .partial-section { background: linear-gradient(135deg, #2a2a1e, #3a3525); border: 2px solid #f0ad4e; border-radius: 16px; padding: 25px; margin-bottom: 20px; }
+        .partial-section h3 { color: #f0ad4e; margin-bottom: 20px; font-size: 1.2rem; }
+        .partial-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+        .partial-stat { background: linear-gradient(135deg, #252542, #2a2a50); border: 1px solid #3a3a5a; border-radius: 10px; padding: 15px; text-align: center; }
+        .partial-stat .label { display: block; color: #a0a0b0; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 5px; }
+        .partial-stat .value { display: block; font-size: 1.3rem; font-weight: 700; color: #fff; }
+        .partial-stat .value.warning { color: #f0ad4e; }
+        .partial-stat .value.positive { color: #00d4aa; }
+        .partial-stat .value.negative { color: #ff6b6b; }
+        .partial-trades-list { margin-bottom: 15px; overflow-x: auto; }
+        .partial-table { width: 100%; border-collapse: collapse; }
+        .partial-table th { background: linear-gradient(135deg, #f0ad4e, #ec971f); color: #1a1a2e; padding: 12px; text-align: left; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; }
+        .partial-table td { padding: 12px; border-bottom: 1px solid #3a3a5a; color: #fff; font-size: 0.9rem; }
+        .partial-table .time-cell { color: #a0a0b0; font-size: 0.85rem; }
+        .partial-table .holding-cell { color: #f0ad4e; font-weight: 600; }
+        .partial-table td.positive { color: #00d4aa; font-weight: 600; }
+        .partial-table td.negative { color: #ff6b6b; font-weight: 600; }
+        .resolve-btn { background: linear-gradient(135deg, #f0ad4e, #ec971f); color: #1a1a2e; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.85rem; }
+        .resolve-btn:hover { opacity: 0.9; }
+        .resolve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .partial-hint { color: #a0a0b0; font-size: 0.85rem; margin: 0; padding: 10px; background: rgba(240, 173, 78, 0.1); border-radius: 8px; }
+        
+        /* Resolve Modal */
+        .resolve-modal { background: linear-gradient(135deg, #1a1a2e, #252545); border: 2px solid #f0ad4e; border-radius: 20px; padding: 35px; max-width: 500px; width: 90%; }
+        .resolve-modal h2 { color: #f0ad4e; margin-bottom: 5px; font-size: 1.4rem; }
+        .resolve-modal .modal-subtitle { color: #a0a0b0; margin-bottom: 25px; font-size: 0.95rem; }
+        .resolve-summary { background: linear-gradient(135deg, #252542, #2a2a50); border: 1px solid #3a3a5a; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+        .resolve-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #3a3a5a; }
+        .resolve-row:last-child { border-bottom: none; }
+        .resolve-row.big { padding: 15px 0; margin-top: 10px; border-top: 2px solid #3a3a5a; }
+        .resolve-label { color: #a0a0b0; font-size: 0.9rem; }
+        .resolve-value { color: #fff; font-weight: 600; font-size: 1rem; }
+        .resolve-value.highlight { color: #f0ad4e; }
+        .resolve-value.positive { color: #00d4aa; font-size: 1.2rem; }
+        .resolve-value.negative { color: #ff6b6b; font-size: 1.2rem; }
+        .resolve-warning { background: rgba(240, 173, 78, 0.1); border: 1px solid #f0ad4e; border-radius: 8px; padding: 12px 15px; margin-bottom: 20px; }
+        .resolve-warning p { color: #f0ad4e; font-size: 0.85rem; margin: 5px 0; }
+        .resolve-confirm-btn { flex: 1; background: linear-gradient(135deg, #f0ad4e, #ec971f); border: none; color: #1a1a2e; padding: 14px; border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 1rem; }
+        .resolve-confirm-btn:hover { opacity: 0.9; }
+        
         .circuit-breaker-banner { background: linear-gradient(135deg, #ff000022, #ff6b6b11); border: 2px solid #ff0000; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
         .cb-content { display: flex; align-items: center; gap: 15px; }
         .cb-icon { font-size: 2rem; }
