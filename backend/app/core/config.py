@@ -24,11 +24,24 @@ class Settings(BaseSettings):
 
     # ===========================================
     # Kraken API - Live Trading
-    # Loaded from .env.live
+    # Can be set via KRAKEN_API_KEY/KRAKEN_API_SECRET in .env
+    # or KRAKEN_LIVE_API_KEY/KRAKEN_LIVE_PRIVATE_KEY in .env.live
     # ===========================================
+    kraken_api_key: Optional[str] = None
+    kraken_api_secret: Optional[str] = None
     kraken_live_api_key: Optional[str] = None
     kraken_live_private_key: Optional[str] = None
     kraken_max_loss_usd: float = 30.0     # Hard limit for live trading
+
+    @property
+    def effective_api_key(self) -> Optional[str]:
+        """Get effective API key (prioritize live key, fallback to general)"""
+        return self.kraken_live_api_key or self.kraken_api_key
+
+    @property
+    def effective_api_secret(self) -> Optional[str]:
+        """Get effective API secret (prioritize live key, fallback to general)"""
+        return self.kraken_live_private_key or self.kraken_api_secret
 
     # Kraken URLs
     kraken_ws_url: str = "wss://ws.kraken.com"

@@ -29,6 +29,10 @@ services:
       # Database
       - DATABASE_URL=postgresql://${POSTGRES_USER:-limogiaicryptox}:${POSTGRES_PASSWORD:-limogiaicryptox123}@db:5432/${POSTGRES_DB:-limogiaicryptox}
 
+      # Kraken API Credentials (for private endpoints and execution engine)
+      - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
+      - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1

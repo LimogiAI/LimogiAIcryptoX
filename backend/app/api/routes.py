@@ -233,6 +233,70 @@ async def restart_engine():
         raise HTTPException(status_code=500, detail=f"Failed to restart engine: {str(e)}")
 
 
+@router.get("/event-scanner-stats")
+async def get_event_scanner_stats():
+    """Get event scanner statistics (debug endpoint)"""
+    engine = get_engine()
+    if not engine:
+        return {"error": "Engine not available"}
+
+    try:
+        # Get detailed stats
+        stats = engine.get_event_scanner_stats_detailed()
+        auto_stats = engine.get_auto_execution_stats()
+        graph_stats = engine.get_graph_detailed_stats()
+
+        # Debug: count paths
+        path_counts = engine.debug_count_paths()
+        usd_connections = engine.debug_get_usd_connections()
+
+        # Get cached opportunities (all, not just profitable)
+        cached_opps, age_ms = engine.get_cached_opportunities_with_age()
+
+        # Find best opportunities (even if negative profit)
+        best_opps = sorted(cached_opps, key=lambda o: o.net_profit_pct, reverse=True)[:5]
+        best_formatted = [
+            {
+                "path": o.path,
+                "legs": o.legs,
+                "gross_profit_pct": round(o.gross_profit_pct, 4),
+                "fees_pct": round(o.fees_pct, 4),
+                "net_profit_pct": round(o.net_profit_pct, 4),
+                "is_profitable": o.is_profitable,
+            }
+            for o in best_opps
+        ]
+
+        return {
+            "event_count": stats[0],
+            "scan_count": stats[1],
+            "incremental_updates": stats[2],
+            "full_rebuilds": stats[3],
+            "opportunities_found": stats[4],
+            "graph_nodes": stats[5],
+            "graph_edges": stats[6],
+            "incremental_enabled": stats[7],
+            "auto_executions": auto_stats[0],
+            "auto_execution_successes": auto_stats[1],
+            "graph_details": {
+                "nodes": graph_stats[0],
+                "pairs": graph_stats[1],
+                "total_edges": graph_stats[2],
+                "valid_edges": graph_stats[3],
+            },
+            "debug": {
+                "usd_paths": path_counts[0],
+                "eur_paths": path_counts[1],
+                "usd_connections": usd_connections[:10],
+                "cached_opps_count": len(cached_opps),
+                "cache_age_ms": age_ms,
+                "best_opportunities": best_formatted,
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.get("/orderbook-health")
 async def get_orderbook_health():
     """Get order book health statistics"""

@@ -47,7 +47,13 @@ export function LiveTradingPanel() {
   
   // Expandable risks section
   const [showRisks, setShowRisks] = useState(false);
-  
+
+  // Rust Execution Engine state
+  const [rustEngineStatus, setRustEngineStatus] = useState(null);
+  const [feeConfig, setFeeConfig] = useState(null);
+  const [feeStats, setFeeStats] = useState(null);
+  const [showFeeSettings, setShowFeeSettings] = useState(false);
+
   const AVAILABLE_CURRENCIES = ['USD', 'USDT', 'EUR', 'BTC', 'ETH'];
   const PRESET_AMOUNTS = [5, 10, 20, 50, 100];
 
@@ -78,6 +84,20 @@ export function LiveTradingPanel() {
       setPartialTrades(partialRes?.trades || []);
       if (configRes.config?.custom_currencies) setCustomCurrencies(configRes.config.custom_currencies);
       if (configRes.config?.base_currency === 'CUSTOM') setShowCustomCurrencies(true);
+
+      // Fetch Rust execution engine status
+      try {
+        const [rustStatus, feeConfigRes, feeStatsRes] = await Promise.all([
+          api.getRustExecutionEngineStatus().catch(() => null),
+          api.getFeeConfig().catch(() => null),
+          api.getFeeStats().catch(() => null),
+        ]);
+        setRustEngineStatus(rustStatus);
+        setFeeConfig(feeConfigRes);
+        setFeeStats(feeStatsRes);
+      } catch (rustErr) {
+        // Rust engine may not be initialized - that's OK
+      }
     } catch (err) {
       console.error('Error fetching live trading data:', err);
       setError(err.message || 'Failed to fetch live trading data');
@@ -183,6 +203,12 @@ export function LiveTradingPanel() {
     } catch (err) {
       showToast('Failed to reset daily stats', 'error');
     }
+  };
+
+  // Get fee config value with default
+  const getFeeConfigValue = (key, defaultValue) => {
+    if (feeConfig?.[key] !== undefined) return feeConfig[key];
+    return defaultValue;
   };
 
   // Partial trade handlers
@@ -555,7 +581,19 @@ export function LiveTradingPanel() {
           <h2>🔴 Live Trading Controls</h2>
           <div className="controls-buttons">
             {!isEnabled ? (
-              <button className="enable-btn" onClick={() => setShowEnableModal(true)} disabled={circuitBroken}>🟢 START Live Trading</button>
+              <>
+                <button
+                  className="enable-btn"
+                  onClick={() => setShowEnableModal(true)}
+                  disabled={circuitBroken || !rustEngineStatus?.connected}
+                  title={!rustEngineStatus?.connected ? 'Executor offline - cannot place orders' : circuitBroken ? 'Circuit breaker triggered' : 'Start live trading'}
+                >
+                  🟢 START Live Trading
+                </button>
+                {!rustEngineStatus?.connected && (
+                  <span className="executor-warning">⚠️ Executor offline</span>
+                )}
+              </>
             ) : (
               <>
                 <button className="disable-btn" onClick={handleDisable}>⏹️ Stop Trading</button>
@@ -566,7 +604,7 @@ export function LiveTradingPanel() {
         </div>
         <div className="status-grid">
           <div className={`status-card ${circuitBroken ? 'danger' : 'ok'}`}><span className="status-label">Circuit Breaker</span><span className="status-value">{circuitBroken ? '🛑 TRIGGERED' : '✅ OK'}</span></div>
-          <div className="status-card"><span className="status-label">Mode</span><span className="status-value">{config?.execution_mode === 'parallel' ? '⚡ Parallel' : '📋 Sequential'}</span></div>
+          <div className="status-card"><span className="status-label">Execution</span><span className="status-value">⚡ Rust WebSocket</span></div>
           <div className="status-card"><span className="status-label">Trade Amount</span><span className="status-value">${config?.trade_amount || 10}</span></div>
         </div>
       </div>
@@ -597,6 +635,113 @@ export function LiveTradingPanel() {
           </div>
         </div>
         <div className="pnl-actions"><button className="reset-btn" onClick={handleResetDaily}>🔄 Reset Daily</button></div>
+      </div>
+
+      {/* Rust Execution Engine Section */}
+      <div className="rust-engine-section">
+        <div className="rust-engine-header">
+          <h3>⚡ Rust Execution Engine</h3>
+          <span className={`engine-status ${rustEngineStatus?.connected ? 'connected' : 'offline'}`}>
+            {rustEngineStatus?.connected ? '● Connected' : '○ Offline'}
+          </span>
+        </div>
+
+        {rustEngineStatus?.connected ? (
+          <div className="rust-engine-grid">
+            <div className="engine-stat">
+              <span className="label">Trades Executed</span>
+              <span className="value">{rustEngineStatus?.stats?.trades_executed || 0}</span>
+            </div>
+            <div className="engine-stat">
+              <span className="label">Success Rate</span>
+              <span className="value positive">
+                {rustEngineStatus?.stats?.success_rate
+                  ? `${(rustEngineStatus.stats.success_rate * 100).toFixed(1)}%`
+                  : '--'}
+              </span>
+            </div>
+            <div className="engine-stat">
+              <span className="label">Avg Latency</span>
+              <span className="value">
+                {rustEngineStatus?.stats?.avg_execution_ms
+                  ? `${rustEngineStatus.stats.avg_execution_ms.toFixed(0)}ms`
+                  : '--'}
+              </span>
+            </div>
+            <div className="engine-stat">
+              <span className="label">Total Profit</span>
+              <span className={`value ${(rustEngineStatus?.stats?.total_profit || 0) >= 0 ? 'positive' : 'negative'}`}>
+                ${(rustEngineStatus?.stats?.total_profit || 0).toFixed(2)}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="engine-offline-message">
+            <p>Rust execution engine is offline.</p>
+            <p className="engine-setup-note">
+              To enable: Add <code>KRAKEN_API_KEY</code> and <code>KRAKEN_API_SECRET</code> to your .env file.
+            </p>
+            <p className="engine-benefits">The engine provides:</p>
+            <ul>
+              <li>10x faster order execution via WebSocket</li>
+              <li>Parallel leg execution for pre-positioned funds</li>
+              <li>Automatic maker/taker order optimization</li>
+            </ul>
+          </div>
+        )}
+
+        {/* Fee Optimization Section */}
+        <div className="fee-optimization-section">
+          <div className="fee-header" onClick={() => setShowFeeSettings(!showFeeSettings)}>
+            <span className="fee-toggle">{showFeeSettings ? '▼' : '▶'}</span>
+            <h4>💰 Fee Optimization</h4>
+            {feeStats && feeStats.maker_orders_attempted > 0 && (
+              <span className="fee-savings">
+                Saved: ${feeStats.total_fee_savings?.toFixed(2) || '0.00'}
+              </span>
+            )}
+          </div>
+
+          {showFeeSettings && (
+            <div className="fee-settings-content">
+              {feeStats && feeStats.maker_orders_attempted > 0 && (
+                <div className="fee-stats-grid">
+                  <div className="fee-stat">
+                    <span className="label">Maker Orders</span>
+                    <span className="value">{feeStats.maker_orders_filled || 0} / {feeStats.maker_orders_attempted || 0}</span>
+                  </div>
+                  <div className="fee-stat">
+                    <span className="label">Fill Rate</span>
+                    <span className="value">{feeStats.maker_fill_rate?.toFixed(1) || 0}%</span>
+                  </div>
+                  <div className="fee-stat">
+                    <span className="label">Total Saved</span>
+                    <span className="value positive">${feeStats.total_fee_savings?.toFixed(4) || '0.00'}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Kraken Fee Rates (read-only - set by Kraken based on 30-day volume) */}
+              <div className="fee-rates-display">
+                <div className="fee-rate-item">
+                  <span className="fee-rate-label">Maker Fee</span>
+                  <span className="fee-rate-value">{(getFeeConfigValue('maker_fee', 0.0016) * 100).toFixed(2)}%</span>
+                </div>
+                <div className="fee-rate-item">
+                  <span className="fee-rate-label">Taker Fee</span>
+                  <span className="fee-rate-value">{(getFeeConfigValue('taker_fee', 0.0026) * 100).toFixed(2)}%</span>
+                </div>
+                <div className="fee-rate-item highlight">
+                  <span className="fee-rate-label">Potential Savings</span>
+                  <span className="fee-rate-value positive">
+                    {((getFeeConfigValue('taker_fee', 0.0026) - getFeeConfigValue('maker_fee', 0.0016)) * 100).toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+              <p className="fee-note">Fee rates are set by Kraken based on your 30-day trading volume.</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Configuration */}
@@ -631,13 +776,7 @@ export function LiveTradingPanel() {
           </div>
           <div className="config-item"><label>Max Daily Loss ($)</label><input type="number" min="10" max="200" value={getConfigValue('max_daily_loss', 30)} onChange={(e) => handleConfigChange('max_daily_loss', parseFloat(e.target.value))} /></div>
           <div className="config-item"><label>Max Total Loss ($)</label><input type="number" min="10" max="200" value={getConfigValue('max_total_loss', 30)} onChange={(e) => handleConfigChange('max_total_loss', parseFloat(e.target.value))} /></div>
-          <div className="config-item">
-            <label>Execution Mode</label>
-            <div className="mode-buttons">
-              <button className={getConfigValue('execution_mode', 'sequential') === 'sequential' ? 'active' : ''} onClick={() => handleConfigChange('execution_mode', 'sequential')}>📋 Sequential</button>
-              <button className={getConfigValue('execution_mode', 'sequential') === 'parallel' ? 'active' : ''} onClick={() => handleConfigChange('execution_mode', 'parallel')}>⚡ Parallel</button>
-            </div>
-          </div>
+          {/* Execution mode removed - Rust WebSocket always uses parallel execution */}
           <div className="config-item">
             <label>Base Currency</label>
             <select value={getConfigValue('base_currency', 'USD')} onChange={(e) => handleBaseCurrencyChange(e.target.value)}>
@@ -650,19 +789,7 @@ export function LiveTradingPanel() {
               <option value="CUSTOM">CUSTOM</option>
             </select>
           </div>
-          {getConfigValue('execution_mode', 'sequential') === 'parallel' && (
-            <div className="config-item">
-              <label>Max Parallel Trades</label>
-              <select value={getConfigValue('max_parallel_trades', 1)} onChange={(e) => handleConfigChange('max_parallel_trades', parseInt(e.target.value))}>
-                <option value={1}>1 trade</option>
-                <option value={2}>2 trades</option>
-                <option value={3}>3 trades</option>
-                <option value={4}>4 trades</option>
-                <option value={5}>5 trades</option>
-              </select>
-              <span className="config-hint">Number of trades to execute simultaneously</span>
-            </div>
-          )}
+          {/* Max parallel trades removed - Rust handles execution internally */}
           {showCustomCurrencies && (
             <div className="config-item full-width">
               <label>Select Currencies</label>
@@ -679,23 +806,7 @@ export function LiveTradingPanel() {
             </div>
           )}
           
-          {/* Execution Settings */}
-          <div className="config-item">
-            <label>Max Retries Per Leg</label>
-            <select value={getConfigValue('max_retries_per_leg', 2)} onChange={(e) => handleConfigChange('max_retries_per_leg', parseInt(e.target.value))}>
-              <option value={1}>1 retry</option>
-              <option value={2}>2 retries</option>
-            </select>
-            <span className="config-hint">Retry attempts if order fails</span>
-          </div>
-          <div className="config-item">
-            <label>Order Timeout</label>
-            <select value={getConfigValue('order_timeout_seconds', 15)} onChange={(e) => handleConfigChange('order_timeout_seconds', parseInt(e.target.value))}>
-              <option value={10}>10 seconds</option>
-              <option value={15}>15 seconds</option>
-            </select>
-            <span className="config-hint">Cancel order if not filled within</span>
-          </div>
+          {/* Execution settings (retries/timeout) removed - Rust WebSocket handles this internally */}
           
           {/* Expandable Risks Section */}
           <div className="config-item full-width">
@@ -791,13 +902,14 @@ export function LiveTradingPanel() {
         </div>
       </div>
 
-      {/* Live Opportunities */}
+      {/* Execution Log - Shows what happened to opportunities */}
       <div className="opportunities-section">
-        <h3>🔍 Live Opportunities</h3>
+        <h3>📋 Execution Log</h3>
+        <p className="section-hint">Shows execution status of detected opportunities (EXECUTED/SKIPPED/MISSED)</p>
         {opportunities.length === 0 ? (
           <div className="empty-state">
-            <p>No opportunities found yet</p>
-            <p className="hint">Opportunities will appear here when the scanner finds them</p>
+            <p>No execution history yet</p>
+            <p className="hint">When opportunities are processed, their status will appear here</p>
           </div>
         ) : (
           <div className="opportunities-table-wrapper">
@@ -1065,25 +1177,36 @@ export function LiveTradingPanel() {
         <div className="modal-overlay">
           <div className="enable-modal">
             <h2>⚠️ START LIVE TRADING</h2>
-            
+
+            {/* Executor Status Check */}
+            <div className={`executor-status-check ${rustEngineStatus?.connected ? 'ready' : 'offline'}`}>
+              <span className="status-icon">{rustEngineStatus?.connected ? '✅' : '❌'}</span>
+              <span className="status-text">
+                {rustEngineStatus?.connected
+                  ? 'Executor Ready - Connected to Kraken'
+                  : 'Executor Offline - Cannot place orders'}
+              </span>
+            </div>
+
             <div className="config-summary">
               <h4>Current Settings:</h4>
               <div className="config-row"><span className="config-label">Trade Amount</span><span className="config-value">${config?.trade_amount || 10} per trade</span></div>
               <div className="config-row"><span className="config-label">Min Profit Threshold</span><span className="config-value">{((config?.min_profit_threshold || 0.003) * 100).toFixed(2)}%</span></div>
               <div className="config-row"><span className="config-label">Max Daily Loss</span><span className="config-value">${config?.max_daily_loss || 30}</span></div>
               <div className="config-row"><span className="config-label">Max Total Loss</span><span className="config-value highlight-red">${config?.max_total_loss || 30}</span></div>
-              <div className="config-row"><span className="config-label">Max Retries</span><span className="config-value">{config?.max_retries_per_leg || 2} per leg</span></div>
-              <div className="config-row"><span className="config-label">Order Timeout</span><span className="config-value">{config?.order_timeout_seconds || 15} seconds</span></div>
-              <div className="config-row"><span className="config-label">Execution Mode</span><span className="config-value">{config?.execution_mode === 'parallel' ? '⚡ Parallel' : '📋 Sequential'}</span></div>
-              {config?.execution_mode === 'parallel' && (
-                <div className="config-row"><span className="config-label">Max Parallel Trades</span><span className="config-value">{config?.max_parallel_trades || 1} trades</span></div>
-              )}
+              <div className="config-row"><span className="config-label">Execution</span><span className="config-value">⚡ Rust WebSocket (~50ms)</span></div>
               <div className="config-row"><span className="config-label">Base Currency</span><span className="config-value">{config?.base_currency || 'USD'}</span></div>
             </div>
-            
+
             <div className="modal-buttons">
               <button className="cancel-btn" onClick={() => setShowEnableModal(false)}>Cancel</button>
-              <button className="confirm-btn" onClick={handleEnable}>✓ Start Live Trading</button>
+              <button
+                className="confirm-btn"
+                onClick={handleEnable}
+                disabled={!rustEngineStatus?.connected}
+              >
+                {rustEngineStatus?.connected ? '✓ Start Live Trading' : '⚠️ Executor Offline'}
+              </button>
             </div>
           </div>
         </div>
@@ -1208,7 +1331,63 @@ export function LiveTradingPanel() {
         .resolve-btn:hover { opacity: 0.9; }
         .resolve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .partial-hint { color: #a0a0b0; font-size: 0.85rem; margin: 0; padding: 10px; background: rgba(240, 173, 78, 0.1); border-radius: 8px; }
-        
+
+        /* Rust Execution Engine Section */
+        .rust-engine-section { background: linear-gradient(135deg, #1a1a2e, #252545); border: 1px solid #3a3a5a; border-radius: 16px; padding: 25px; margin-bottom: 20px; }
+        .rust-engine-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #3a3a5a; }
+        .rust-engine-header h3 { color: #6c5ce7; margin: 0; font-size: 1.2rem; }
+        .engine-status { font-size: 0.9rem; font-weight: 600; padding: 6px 12px; border-radius: 20px; }
+        .engine-status.connected { background: rgba(0, 212, 170, 0.2); color: #00d4aa; }
+        .engine-status.offline { background: rgba(100, 100, 100, 0.2); color: #888; }
+        .rust-engine-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
+        .engine-stat { background: linear-gradient(135deg, #252542, #2a2a50); border: 1px solid #3a3a5a; border-radius: 10px; padding: 18px; text-align: center; }
+        .engine-stat .label { display: block; color: #a0a0b0; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 8px; }
+        .engine-stat .value { display: block; font-size: 1.3rem; font-weight: 700; color: #fff; }
+        .engine-stat .value.positive { color: #00d4aa; }
+        .engine-stat .value.negative { color: #ff6b6b; }
+        .engine-offline-message { background: rgba(100, 100, 100, 0.1); border: 1px solid #3a3a5a; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+        .engine-offline-message p { color: #a0a0b0; margin: 0 0 10px 0; }
+        .engine-offline-message .engine-setup-note { background: rgba(108, 92, 231, 0.15); border: 1px solid #6c5ce7; border-radius: 6px; padding: 10px 12px; margin: 12px 0; }
+        .engine-offline-message .engine-setup-note code { background: rgba(0, 0, 0, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; }
+        .engine-offline-message .engine-benefits { color: #888; font-size: 0.9rem; margin-top: 15px; }
+        .engine-offline-message ul { color: #888; margin: 0; padding-left: 20px; }
+        .engine-offline-message li { margin: 5px 0; }
+
+        /* Fee Optimization Section */
+        .fee-optimization-section { background: linear-gradient(135deg, #252542, #2a2a50); border: 1px solid #3a3a5a; border-radius: 12px; overflow: hidden; }
+        .fee-header { display: flex; align-items: center; gap: 12px; padding: 15px 20px; cursor: pointer; transition: background 0.2s; }
+        .fee-header:hover { background: rgba(255, 255, 255, 0.03); }
+        .fee-toggle { color: #f0ad4e; font-size: 0.8rem; }
+        .fee-header h4 { color: #f0ad4e; margin: 0; flex: 1; font-size: 1rem; }
+        .fee-savings { color: #00d4aa; font-weight: 600; font-size: 0.9rem; }
+        .fee-settings-content { padding: 0 20px 20px 20px; }
+        .fee-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+        .fee-stat { background: linear-gradient(135deg, #1a1a2e, #202035); border: 1px solid #3a3a5a; border-radius: 8px; padding: 12px; text-align: center; }
+        .fee-stat .label { display: block; color: #888; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 5px; }
+        .fee-stat .value { display: block; color: #fff; font-size: 1rem; font-weight: 600; }
+        .fee-stat .value.positive { color: #00d4aa; }
+        .fee-config-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
+        .fee-config-item { display: flex; flex-direction: column; gap: 8px; }
+        .fee-config-item label { color: #a0a0b0; font-size: 0.85rem; font-weight: 500; }
+        .fee-config-item input[type="number"] { background: linear-gradient(135deg, #1a1a2e, #202035); border: 1px solid #3a3a5a; color: #fff; padding: 10px 12px; border-radius: 6px; font-size: 0.9rem; }
+        .fee-config-item input[type="number"]:focus { outline: none; border-color: #f0ad4e; }
+        .fee-config-item.checkbox-item label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+        .fee-config-item.checkbox-item input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+        .fee-input-group { display: flex; align-items: center; gap: 10px; }
+        .fee-input-group input { flex: 1; }
+        .fee-suffix { color: #888; font-size: 0.85rem; min-width: 60px; }
+        .fee-actions { margin-top: 15px; text-align: right; }
+        .apply-fee-btn { background: linear-gradient(135deg, #f0ad4e, #ec971f); color: #1a1a2e; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+        .apply-fee-btn:hover { opacity: 0.9; }
+        .config-hint { color: #666; font-size: 0.75rem; }
+        .fee-rates-display { display: flex; gap: 15px; margin-bottom: 15px; }
+        .fee-rate-item { flex: 1; background: linear-gradient(135deg, #1a1a2e, #202035); border: 1px solid #3a3a5a; border-radius: 8px; padding: 12px; text-align: center; }
+        .fee-rate-item.highlight { border-color: #00d4aa; }
+        .fee-rate-label { display: block; color: #888; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 5px; }
+        .fee-rate-value { display: block; color: #fff; font-size: 1.1rem; font-weight: 600; }
+        .fee-rate-value.positive { color: #00d4aa; }
+        .fee-note { color: #666; font-size: 0.8rem; margin: 0; font-style: italic; }
+
         /* Resolve Modal */
         .resolve-modal { background: linear-gradient(135deg, #1a1a2e, #252545); border: 2px solid #f0ad4e; border-radius: 20px; padding: 35px; max-width: 500px; width: 90%; }
         .resolve-modal h2 { color: #f0ad4e; margin-bottom: 5px; font-size: 1.4rem; }
@@ -1240,6 +1419,7 @@ export function LiveTradingPanel() {
         .controls-buttons { display: flex; gap: 12px; }
         .enable-btn { background: linear-gradient(135deg, #00d4aa, #00b894); color: #1a1a2e; border: none; padding: 14px 28px; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 1rem; }
         .enable-btn:disabled { background: #444; color: #888; cursor: not-allowed; }
+        .executor-warning { color: #f0ad4e; font-size: 0.85rem; display: flex; align-items: center; }
         .disable-btn { background: #3a3a5a; color: white; border: 1px solid #555; padding: 14px 28px; border-radius: 10px; font-weight: 600; cursor: pointer; }
         .emergency-btn { background: linear-gradient(135deg, #ff0000, #cc0000); color: white; border: none; padding: 14px 28px; border-radius: 10px; font-weight: 700; cursor: pointer; animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.4); } 50% { box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); } }
@@ -1372,6 +1552,11 @@ export function LiveTradingPanel() {
         .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; z-index: 1000; }
         .enable-modal { background: linear-gradient(135deg, #1a1a2e, #252545); border: 1px solid #3a3a5a; border-radius: 20px; padding: 35px; max-width: 500px; width: 90%; }
         .enable-modal h2 { color: #f0ad4e; margin-bottom: 10px; font-size: 1.4rem; }
+        .executor-status-check { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-weight: 600; }
+        .executor-status-check.ready { background: rgba(0, 212, 170, 0.15); border: 1px solid #00d4aa; color: #00d4aa; }
+        .executor-status-check.offline { background: rgba(255, 107, 107, 0.15); border: 1px solid #ff6b6b; color: #ff6b6b; }
+        .executor-status-check .status-icon { font-size: 1.2rem; }
+        .executor-status-check .status-text { font-size: 0.95rem; }
         .modal-subtitle { color: #a0a0b0; margin-bottom: 25px; font-size: 0.95rem; }
         .config-summary { background: linear-gradient(135deg, #252542, #2a2a50); border: 1px solid #3a3a5a; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
         .config-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #3a3a5a; }

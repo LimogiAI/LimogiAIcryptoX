@@ -10,6 +10,10 @@ export function StatusBar({ status }) {
   const [message, setMessage] = useState(null);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
+  // Rust execution engine stats
+  const [executionStats, setExecutionStats] = useState(null);
+  const [feeStats, setFeeStats] = useState(null);
+
   const COOLDOWN_DURATION = 30;
 
   useEffect(() => {
@@ -43,9 +47,26 @@ export function StatusBar({ status }) {
     }
   }, []);
 
+  const fetchExecutionStats = useCallback(async () => {
+    try {
+      const [execStatus, feeData] = await Promise.all([
+        api.getRustExecutionEngineStatus().catch(() => null),
+        api.getFeeStats().catch(() => null),
+      ]);
+      setExecutionStats(execStatus);
+      setFeeStats(feeData);
+    } catch (err) {
+      // Silently fail - execution engine may not be initialized
+    }
+  }, []);
+
   useEffect(() => {
     fetchSettings();
-  }, [fetchSettings]);
+    fetchExecutionStats();
+    // Refresh execution stats every 10 seconds
+    const interval = setInterval(fetchExecutionStats, 10000);
+    return () => clearInterval(interval);
+  }, [fetchSettings, fetchExecutionStats]);
 
   if (!status) return null;
 
@@ -131,7 +152,7 @@ export function StatusBar({ status }) {
           <span className={'status-value ' + (status.is_running && scannerEnabled ? 'running' : 'stopped')}>
             {status.is_running && scannerEnabled ? '● Active' : '○ Stopped'}
           </span>
-          <span className="status-note">(every {formatScanInterval(getCurrentValue('scan_interval_ms'))})</span>
+          <span className="status-note">(prices)</span>
         </div>
         
         <div className="status-item">
@@ -151,7 +172,46 @@ export function StatusBar({ status }) {
           <span className="status-value uptime">{formatUptime(uptimeSeconds)}</span>
         </div>
 
-        <button 
+        {/* Rust Execution Engine Status (Private WebSocket for order execution) */}
+        {executionStats && (
+          <>
+            <div className="status-divider"></div>
+            <div className="status-item">
+              <span className="status-label">Executor</span>
+              <span className={'status-value ' + (executionStats.connected ? 'running' : 'stopped')}>
+                {executionStats.connected ? '● Ready' : '○ Offline'}
+              </span>
+              <span className="status-note">(orders)</span>
+            </div>
+            {executionStats.connected && (
+              <>
+                <div className="status-item">
+                  <span className="status-label">Trades</span>
+                  <span className="status-value">{executionStats.stats?.trades_executed || 0}</span>
+                </div>
+                <div className="status-item">
+                  <span className="status-label">Avg Latency</span>
+                  <span className="status-value">
+                    {executionStats.stats?.avg_execution_ms
+                      ? `${executionStats.stats.avg_execution_ms.toFixed(0)}ms`
+                      : '--'}
+                  </span>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* Fee Optimization Stats */}
+        {feeStats && feeStats.maker_orders_attempted > 0 && (
+          <div className="status-item">
+            <span className="status-label">Fee Saved</span>
+            <span className="status-value positive">${feeStats.total_fee_savings?.toFixed(2) || '0.00'}</span>
+            <span className="status-note">({feeStats.maker_fill_rate?.toFixed(0) || 0}% maker)</span>
+          </div>
+        )}
+
+        <button
           className={'settings-toggle-btn ' + (showSettings ? 'active' : '')}
           onClick={() => setShowSettings(!showSettings)}
           title="Engine Settings"
@@ -198,22 +258,7 @@ export function StatusBar({ status }) {
           </div>
 
           <div className="settings-grid">
-            <div className="setting-item">
-              <label>Scan Interval</label>
-              <select 
-                value={getCurrentValue('scan_interval_ms') || 10000}
-                onChange={(e) => handleSettingChange('scan_interval_ms', e.target.value)}
-              >
-                <option value={100}>100ms (very fast)</option>
-                <option value={250}>250ms (fast)</option>
-                <option value={500}>500ms</option>
-                <option value={1000}>1 second</option>
-                <option value={2000}>2 seconds</option>
-                <option value={5000}>5 seconds</option>
-                <option value={7000}>7 seconds</option>
-                <option value={10000}>10 seconds</option>
-              </select>
-            </div>
+            {/* Scan Interval removed - Rust uses event-driven scanning (triggers on every order book update) */}
 
             <div className="setting-item">
               <label>Max Pairs</label>
@@ -317,6 +362,8 @@ export function StatusBar({ status }) {
         .restart-btn:hover:not(:disabled) { background: linear-gradient(135deg, #f5b75e, #e5a448); transform: translateY(-1px); }
         .restart-btn:disabled { background: #555; color: #999; cursor: not-allowed; transform: none; }
         .cooldown-note { text-align: right; color: #888; font-size: 0.8rem; margin-top: 10px; }
+        .status-divider { width: 1px; height: 30px; background: #3a3a5a; margin: 0 10px; }
+        .status-value.positive { color: #00d4aa; }
       `}</style>
     </div>
   );

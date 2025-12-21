@@ -13,26 +13,26 @@ router = APIRouter()
 
 class ConnectionManager:
     """Manage WebSocket connections to frontend"""
-    
+
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-    
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
-    
+
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
         logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
-    
+
     async def send_personal_message(self, message: Dict, websocket: WebSocket):
         try:
             await websocket.send_json(message)
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
-    
+
     async def broadcast(self, message: Dict):
         for connection in self.active_connections:
             try:
@@ -54,20 +54,17 @@ def get_engine():
 async def websocket_endpoint(websocket: WebSocket):
     """
     Main WebSocket endpoint for frontend
-    
+
     Messages from client:
     - {"type": "ping"}
     - {"type": "get_status"}
-    - {"type": "get_slots"}
-    
+
     Messages to client:
     - {"type": "status", "data": {...}}
-    - {"type": "slots", "data": {...}}
-    - {"type": "trade", "data": {...}}
     - {"type": "pong"}
     """
     await manager.connect(websocket)
-    
+
     try:
         # Send initial status
         engine = get_engine()
@@ -78,13 +75,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 "data": {
                     "is_running": stats.is_running,
                     "pairs_monitored": stats.pairs_monitored,
-                    "trades_executed": stats.trades_executed,
-                    "total_profit": stats.total_profit,
-                    "win_rate": stats.win_rate,
+                    "currencies_tracked": stats.currencies_tracked,
+                    "opportunities_found": stats.opportunities_found,
+                    "uptime_seconds": stats.uptime_seconds,
                 },
                 "timestamp": datetime.utcnow().isoformat()
             }, websocket)
-        
+
         while True:
             try:
                 # Wait for messages with timeout
@@ -92,16 +89,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     websocket.receive_text(),
                     timeout=30.0
                 )
-                
+
                 message = json.loads(data)
                 msg_type = message.get("type")
-                
+
                 if msg_type == "ping":
                     await manager.send_personal_message({
                         "type": "pong",
                         "timestamp": datetime.utcnow().isoformat()
                     }, websocket)
-                
+
                 elif msg_type == "get_status":
                     engine = get_engine()
                     if engine:
@@ -112,46 +109,21 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "is_running": stats.is_running,
                                 "pairs_monitored": stats.pairs_monitored,
                                 "currencies_tracked": stats.currencies_tracked,
-                                "trades_executed": stats.trades_executed,
-                                "total_profit": stats.total_profit,
-                                "win_rate": stats.win_rate,
+                                "opportunities_found": stats.opportunities_found,
                                 "uptime_seconds": stats.uptime_seconds,
                                 "scan_cycle_ms": stats.scan_cycle_ms,
+                                "avg_orderbook_staleness_ms": stats.avg_orderbook_staleness_ms,
                             },
                             "timestamp": datetime.utcnow().isoformat()
                         }, websocket)
-                
-                elif msg_type == "get_slots":
-                    engine = get_engine()
-                    if engine:
-                        slots = engine.get_slots()
-                        await manager.send_personal_message({
-                            "type": "slots",
-                            "data": {
-                                "slots": [
-                                    {
-                                        "id": s.id,
-                                        "balance": s.balance,
-                                        "status": s.status,
-                                        "trades_count": s.trades_count,
-                                        "wins_count": s.wins_count,
-                                        "total_profit": s.total_profit,
-                                    }
-                                    for s in slots
-                                ],
-                                "total_balance": engine.get_total_balance(),
-                                "total_profit": engine.get_total_profit(),
-                            },
-                            "timestamp": datetime.utcnow().isoformat()
-                        }, websocket)
-                    
+
             except asyncio.TimeoutError:
                 # Send heartbeat
                 await manager.send_personal_message({
                     "type": "heartbeat",
                     "timestamp": datetime.utcnow().isoformat()
                 }, websocket)
-                
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
@@ -164,9 +136,9 @@ async def broadcast_trade(trade_result):
     await manager.broadcast({
         "type": "trade",
         "data": {
-            "slot_id": trade_result.slot_id,
+            "trade_id": trade_result.trade_id,
             "path": trade_result.path,
-            "profit_amount": trade_result.profit_amount,
+            "profit_loss": trade_result.profit_loss,
             "status": trade_result.status,
         },
         "timestamp": datetime.utcnow().isoformat()
@@ -182,9 +154,9 @@ async def broadcast_status():
             "type": "status",
             "data": {
                 "is_running": stats.is_running,
-                "trades_executed": stats.trades_executed,
-                "total_profit": stats.total_profit,
-                "win_rate": stats.win_rate,
+                "pairs_monitored": stats.pairs_monitored,
+                "currencies_tracked": stats.currencies_tracked,
+                "opportunities_found": stats.opportunities_found,
             },
             "timestamp": datetime.utcnow().isoformat()
         })

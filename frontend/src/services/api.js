@@ -329,6 +329,74 @@ export const api = {
     const response = await client.post('/api/live/scanner/stop');
     return response.data;
   },
+
+  // ==================== RUST EXECUTION ENGINE API ====================
+
+  // Initialize Rust execution engine with API credentials
+  async initRustExecutionEngine(apiKey, apiSecret) {
+    const response = await client.post('/api/live/execution-engine/init', {
+      api_key: apiKey,
+      api_secret: apiSecret,
+    });
+    return response.data;
+  },
+
+  // Connect Rust execution engine to Kraken private WebSocket
+  async connectRustExecutionEngine() {
+    const response = await client.post('/api/live/execution-engine/connect');
+    return response.data;
+  },
+
+  // Disconnect Rust execution engine
+  async disconnectRustExecutionEngine() {
+    const response = await client.post('/api/live/execution-engine/disconnect');
+    return response.data;
+  },
+
+  // Get Rust execution engine status
+  async getRustExecutionEngineStatus() {
+    const response = await client.get('/api/live/execution-engine/status');
+    return response.data;
+  },
+
+  // Execute trade via Rust engine
+  async executeViaRustEngine(path, amount, mode = 'sequential', balances = null) {
+    const response = await client.post('/api/live/execution-engine/execute', {
+      path,
+      amount,
+      mode,
+      balances,
+    });
+    return response.data;
+  },
+
+  // Get fee configuration
+  async getFeeConfig() {
+    const response = await client.get('/api/live/fee-config');
+    return response.data;
+  },
+
+  // Update fee configuration
+  async updateFeeConfig(config) {
+    const response = await client.put('/api/live/fee-config', config);
+    return response.data;
+  },
+
+  // Get fee optimization statistics
+  async getFeeStats() {
+    const response = await client.get('/api/live/fee-stats');
+    return response.data;
+  },
+
+  // Analyze parallel execution opportunity
+  async analyzeParallelExecution(path, amount, balances = null) {
+    const response = await client.post('/api/live/analyze-parallel', {
+      path,
+      amount,
+      balances,
+    });
+    return response.data;
+  },
 };
 
 export default api;

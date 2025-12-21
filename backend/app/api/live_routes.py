@@ -70,16 +70,33 @@ async def get_config():
 
 @router.put("/config")
 async def update_config(request: ConfigUpdateRequest):
-    """Update live trading configuration"""
+    """Update live trading configuration (syncs to Rust engine)"""
     manager = get_manager()
-    
+
     updates = {k: v for k, v in request.dict().items() if v is not None}
-    
+
     if not updates:
         raise HTTPException(status_code=400, detail="No updates provided")
-    
+
     try:
         config = manager.update_config(updates)
+
+        # Sync config to Rust engine
+        try:
+            engine = get_engine()
+            engine.update_trading_config(
+                enabled=config.is_enabled,
+                trade_amount=config.trade_amount,
+                min_profit_threshold=config.min_profit_threshold * 100,  # Convert to percentage
+                max_daily_loss=config.max_daily_loss,
+                max_total_loss=config.max_total_loss,
+                base_currency=config.base_currency,
+                execution_mode=config.execution_mode,
+            )
+            logger.info("Trading config synced to Rust engine")
+        except Exception as e:
+            logger.warning(f"Failed to sync config to Rust engine: {e}")
+
         return {
             "success": True,
             "message": "Configuration updated",
@@ -98,30 +115,51 @@ async def update_config(request: ConfigUpdateRequest):
 @router.post("/enable")
 async def enable_live_trading(request: EnableRequest):
     """
-    Enable live trading.
-    
+    Enable live trading (syncs to Rust engine).
+
     Requires:
     - confirm: true
     - confirm_text: "I understand the risks"
     """
     manager = get_manager()
-    
+
     result = await manager.enable(
         confirm=request.confirm,
         confirm_text=request.confirm_text
     )
-    
+
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error'))
-    
+
+    # Sync to Rust engine and enable auto-execution
+    try:
+        engine = get_engine()
+        engine.enable_trading()
+        # Enable auto-execution so Rust handles the full pipeline
+        engine.enable_auto_execution()
+        logger.info("Live trading + auto-execution enabled in Rust engine")
+    except Exception as e:
+        logger.warning(f"Failed to enable trading in Rust engine: {e}")
+
     return result
 
 
 @router.post("/disable")
 async def disable_live_trading(reason: str = "Manual disable"):
-    """Disable live trading"""
+    """Disable live trading (syncs to Rust engine)"""
     manager = get_manager()
-    return manager.disable(reason)
+    result = manager.disable(reason)
+
+    # Sync to Rust engine and disable auto-execution
+    try:
+        engine = get_engine()
+        engine.disable_auto_execution()
+        engine.disable_trading(reason)
+        logger.info("Live trading + auto-execution disabled in Rust engine")
+    except Exception as e:
+        logger.warning(f"Failed to disable trading in Rust engine: {e}")
+
+    return result
 
 
 # ==========================================
@@ -452,11 +490,21 @@ async def get_positions():
 
 @router.post("/quick-disable")
 async def quick_disable():
-    """Quick disable for emergency stop button"""
+    """Quick disable for emergency stop button (syncs to Rust)"""
     manager = get_manager()
     manager.disable("Emergency stop")
     manager.trigger_circuit_breaker("Emergency stop")
-    
+
+    # CRITICAL: Sync to Rust engine immediately (disable auto-execution first)
+    try:
+        engine = get_engine()
+        engine.disable_auto_execution()  # Stop auto-execution immediately
+        engine.disable_trading("Emergency stop")
+        engine.trip_circuit_breaker("Emergency stop")
+        logger.info("Emergency stop: Auto-execution + trading disabled, circuit breaker tripped")
+    except Exception as e:
+        logger.error(f"CRITICAL: Failed to sync emergency stop to Rust engine: {e}")
+
     return {
         "success": True,
         "message": "Live trading disabled and circuit breaker triggered",
@@ -526,16 +574,339 @@ async def start_scanner():
 async def stop_scanner():
     """Stop the live trading scanner"""
     from app.core.live_trading import get_live_scanner
-    
+
     scanner = get_live_scanner()
     if not scanner:
         raise HTTPException(status_code=503, detail="Live scanner not initialized")
-    
+
     scanner.stop()
-    
+
     manager = get_manager()
     return {
         "success": True,
         "message": "Scanner stopped",
         "status": manager.get_scanner_status(),
     }
+
+
+# ==========================================
+# Rust Execution Engine Endpoints (Phase 4-6)
+# ==========================================
+
+def get_engine():
+    """Get the Rust trading engine instance"""
+    from app.main import engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Trading engine not initialized")
+    return engine
+
+
+class RustExecutionConfigRequest(BaseModel):
+    """Request to configure Rust execution engine"""
+    api_key: str
+    api_secret: str
+
+
+class FeeConfigRequest(BaseModel):
+    """Request to configure fee optimization"""
+    maker_fee: float = 0.0016  # 0.16%
+    taker_fee: float = 0.0026  # 0.26%
+    min_profit_for_maker: float = 0.5  # Minimum profit % to try maker orders
+    max_spread_for_maker: float = 0.1  # Maximum spread % for maker orders
+    use_maker_for_intermediate: bool = False  # Enable maker for non-final legs
+
+
+class RustExecuteRequest(BaseModel):
+    """Request to execute via Rust engine"""
+    path: str
+    amount: float
+    mode: str = "sequential"  # "sequential" or "parallel"
+    balances: Optional[Dict[str, float]] = None  # Pre-positioned balances for parallel
+
+
+@router.post("/execution-engine/init")
+async def init_execution_engine(request: RustExecutionConfigRequest):
+    """
+    Initialize the Rust execution engine with Kraken API credentials.
+
+    This must be called before using any Rust-based execution features.
+    The engine will use WebSocket v2 for faster order placement (~50ms vs ~500ms REST).
+    """
+    try:
+        engine = get_engine()
+        engine.init_execution_engine(request.api_key, request.api_secret)
+
+        return {
+            "success": True,
+            "message": "Rust execution engine initialized",
+            "features": {
+                "websocket_execution": True,
+                "parallel_execution": True,
+                "fee_optimization": True,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to initialize execution engine: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/execution-engine/connect")
+async def connect_execution_engine():
+    """
+    Connect the Rust execution engine to Kraken's private WebSocket.
+
+    Must call /init first with API credentials.
+    """
+    try:
+        engine = get_engine()
+        engine.connect_execution_engine()
+
+        return {
+            "success": True,
+            "message": "Connected to Kraken private WebSocket",
+            "connected": engine.is_execution_engine_connected(),
+        }
+    except Exception as e:
+        logger.error(f"Failed to connect execution engine: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/execution-engine/disconnect")
+async def disconnect_execution_engine():
+    """Disconnect the Rust execution engine from Kraken's private WebSocket."""
+    try:
+        engine = get_engine()
+        engine.disconnect_execution_engine()
+
+        return {
+            "success": True,
+            "message": "Disconnected from Kraken private WebSocket",
+        }
+    except Exception as e:
+        logger.error(f"Failed to disconnect execution engine: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/execution-engine/status")
+async def get_execution_engine_status():
+    """Get Rust execution engine status and statistics."""
+    try:
+        engine = get_engine()
+
+        is_connected = engine.is_execution_engine_connected()
+        orders_placed, orders_filled, orders_failed, total_volume, _ = engine.get_execution_stats()
+
+        # Get trading stats from Rust guard
+        trades_executed, trades_successful, opps_seen, opps_executed, daily_pnl, total_pnl = \
+            engine.get_trading_stats()
+
+        # Get trading config from Rust
+        enabled, trade_amount, min_profit, max_daily, max_total, base_currency, exec_mode = \
+            engine.get_trading_config()
+
+        # Get circuit breaker state
+        is_broken, broken_reason, cb_daily_pnl, cb_total_pnl, daily_trades, total_trades, is_executing = \
+            engine.get_circuit_breaker_state()
+
+        return {
+            "connected": is_connected,
+            "trading_enabled": enabled,
+            "stats": {
+                "orders_placed": orders_placed,
+                "orders_filled": orders_filled,
+                "orders_failed": orders_failed,
+                "total_volume_usd": total_volume,
+                "fill_rate": (orders_filled / orders_placed * 100) if orders_placed > 0 else 0,
+                "trades_executed": trades_executed,
+                "trades_successful": trades_successful,
+                "success_rate": (trades_successful / trades_executed) if trades_executed > 0 else 0,
+                "daily_pnl": daily_pnl,
+                "total_pnl": total_pnl,
+                "total_profit": total_pnl,  # Alias for UI compatibility
+            },
+            "config": {
+                "trade_amount": trade_amount,
+                "min_profit_threshold": min_profit,
+                "max_daily_loss": max_daily,
+                "max_total_loss": max_total,
+                "base_currency": base_currency,
+                "execution_mode": exec_mode,
+            },
+            "circuit_breaker": {
+                "is_broken": is_broken,
+                "reason": broken_reason,
+                "daily_trades": daily_trades,
+                "total_trades": total_trades,
+                "is_executing": is_executing,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get execution engine status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/execution-engine/execute")
+async def execute_via_rust(request: RustExecuteRequest):
+    """
+    Execute an arbitrage opportunity via the Rust execution engine.
+
+    Modes:
+    - "sequential": Execute legs one after another (safest)
+    - "parallel": Execute independent legs in parallel (faster, requires pre-positioned funds)
+
+    For parallel mode, provide balances dict with pre-positioned amounts.
+    """
+    try:
+        engine = get_engine()
+
+        if not engine.is_execution_engine_connected():
+            raise HTTPException(
+                status_code=400,
+                detail="Execution engine not connected. Call /execution-engine/connect first."
+            )
+
+        if request.mode == "parallel" and request.balances:
+            success, legs_completed, total_input, total_output, profit_pct, error = \
+                engine.execute_opportunity_parallel(
+                    request.path,
+                    request.amount,
+                    request.balances,
+                    request.mode
+                )
+        else:
+            success, legs_completed, total_input, total_output, profit_pct, error = \
+                engine.execute_opportunity(request.path, request.amount)
+
+        return {
+            "success": success,
+            "legs_completed": legs_completed,
+            "total_input": total_input,
+            "total_output": total_output,
+            "profit_pct": profit_pct,
+            "profit_amount": total_output - total_input,
+            "error": error if error else None,
+            "execution_mode": request.mode,
+        }
+    except Exception as e:
+        logger.error(f"Rust execution failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# Fee Optimization Endpoints (Phase 6)
+# ==========================================
+
+@router.get("/fee-config")
+async def get_fee_config():
+    """Get current fee optimization configuration."""
+    try:
+        engine = get_engine()
+        maker_fee, taker_fee, min_profit, max_spread, use_maker = engine.get_fee_config()
+
+        return {
+            "maker_fee": maker_fee,
+            "maker_fee_pct": maker_fee * 100,
+            "taker_fee": taker_fee,
+            "taker_fee_pct": taker_fee * 100,
+            "fee_savings_potential_pct": (taker_fee - maker_fee) * 100,
+            "min_profit_for_maker": min_profit,
+            "max_spread_for_maker": max_spread,
+            "use_maker_for_intermediate": use_maker,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get fee config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/fee-config")
+async def update_fee_config(request: FeeConfigRequest):
+    """
+    Update fee optimization configuration.
+
+    Fee optimization automatically selects maker vs taker orders based on:
+    - Opportunity profit margin
+    - Order book spread
+    - Leg position (final leg always uses taker for certainty)
+    """
+    try:
+        engine = get_engine()
+        engine.set_fee_config(
+            request.maker_fee,
+            request.taker_fee,
+            request.min_profit_for_maker,
+            request.max_spread_for_maker,
+            request.use_maker_for_intermediate,
+        )
+
+        return {
+            "success": True,
+            "message": "Fee configuration updated",
+            "config": {
+                "maker_fee": request.maker_fee,
+                "taker_fee": request.taker_fee,
+                "min_profit_for_maker": request.min_profit_for_maker,
+                "max_spread_for_maker": request.max_spread_for_maker,
+                "use_maker_for_intermediate": request.use_maker_for_intermediate,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to update fee config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/fee-stats")
+async def get_fee_optimization_stats():
+    """Get fee optimization statistics."""
+    try:
+        engine = get_engine()
+        attempted, filled, savings, success_rate = engine.get_fee_optimization_stats()
+
+        return {
+            "maker_orders_attempted": attempted,
+            "maker_orders_filled": filled,
+            "total_savings_usd": savings,
+            "success_rate_pct": success_rate,
+            "recommendation": "Enable maker orders for intermediate legs if success_rate > 70%"
+                if success_rate > 70 else "Keep using taker orders for reliability"
+        }
+    except Exception as e:
+        logger.error(f"Failed to get fee stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# Parallel Execution Analysis (Phase 5)
+# ==========================================
+
+@router.post("/analyze-parallel")
+async def analyze_parallel_execution(
+    path: str = Query(..., description="Arbitrage path (e.g., 'USD → BTC → ETH → USD')"),
+    amount: float = Query(..., description="Trade amount"),
+    balances: Optional[Dict[str, float]] = None,
+):
+    """
+    Analyze if parallel execution would benefit a given path.
+
+    Returns the execution plan showing which legs can run in parallel
+    and the estimated speedup.
+    """
+    try:
+        engine = get_engine()
+
+        num_groups, can_fully_parallelize, estimated_speedup = \
+            engine.analyze_parallel_execution(path, amount, balances)
+
+        return {
+            "path": path,
+            "amount": amount,
+            "analysis": {
+                "execution_groups": num_groups,
+                "can_fully_parallelize": can_fully_parallelize,
+                "estimated_speedup_pct": estimated_speedup,
+                "recommendation": "Use parallel mode" if estimated_speedup > 10 else "Use sequential mode",
+            },
+            "pre_positioned_balances": balances or {},
+        }
+    except Exception as e:
+        logger.error(f"Failed to analyze parallel execution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

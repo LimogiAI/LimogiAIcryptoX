@@ -9,8 +9,8 @@ name = "trading_engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Python bindings
-pyo3 = { version = "0.20", features = ["extension-module"] }
+# Python bindings - updated for Python 3.13 support
+pyo3 = { version = "0.23", features = ["extension-module"] }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
@@ -39,6 +39,11 @@ tracing-subscriber = "0.3"
 url = "2.5"
 rayon = "1.8"  # Parallel iterators
 rand = "0.8"   # Random number generation for execution delay simulation
+
+# Crypto for API authentication (Phase 4)
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
 
 # Graph algorithms
 petgraph = "0.6"
