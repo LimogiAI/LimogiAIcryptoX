@@ -346,11 +346,12 @@ impl PersistentGraph {
         opportunities
     }
 
-    /// DFS to find all cycles back to start
+    /// Iterative DFS to find all cycles back to start
+    /// Uses explicit stack to avoid stack overflow with large graphs
     fn dfs_find_cycles(
         &self,
         start: NodeIndex,
-        current: NodeIndex,
+        _current: NodeIndex,
         currencies: &mut Vec<String>,
         pairs: &mut Vec<String>,
         actions: &mut Vec<String>,
@@ -359,67 +360,120 @@ impl PersistentGraph {
         max_legs: usize,
         results: &mut Vec<ArbitragePath>,
     ) {
-        if currencies.len() > max_legs + 1 {
+        // Stack entry: (node, edge_index, is_backtrack)
+        // edge_index tracks which neighbor to explore next
+        // is_backtrack indicates we're returning from a subtree
+        struct StackFrame {
+            node: NodeIndex,
+            edge_iter_index: usize,
+            edges: Vec<(NodeIndex, String, String, String, f64)>, // (target, pair, side, currency, rate)
+        }
+
+        // Collect edges from start node
+        let start_edges: Vec<(NodeIndex, String, String, String, f64)> = self.graph.edges(start)
+            .filter_map(|edge| {
+                let edge_data = edge.weight();
+                if !edge_data.valid || edge_data.rate <= 0.0 {
+                    return None;
+                }
+                let target = edge.target();
+                let target_currency = self.graph[target].clone();
+                Some((target, edge_data.pair.clone(), edge_data.side.clone(), target_currency, edge_data.rate))
+            })
+            .collect();
+
+        if start_edges.is_empty() {
             return;
         }
 
-        // Check if we're back at start (and have at least 2 legs)
-        if current == start && currencies.len() > 2 {
-            results.push(ArbitragePath {
-                currencies: currencies.clone(),
-                pairs: pairs.clone(),
-                actions: actions.clone(),
-                rates: rates.clone(),
-            });
-            return;
-        }
+        let mut stack: Vec<StackFrame> = vec![StackFrame {
+            node: start,
+            edge_iter_index: 0,
+            edges: start_edges,
+        }];
 
-        // Explore neighbors
-        for edge in self.graph.edges(current) {
-            let edge_data = edge.weight();
-
-            // Skip invalid edges
-            if !edge_data.valid || edge_data.rate <= 0.0 {
+        while let Some(frame) = stack.last_mut() {
+            // Check if we've explored all edges at this level
+            if frame.edge_iter_index >= frame.edges.len() {
+                // Backtrack: pop this frame and undo state
+                stack.pop();
+                if !pairs.is_empty() {
+                    let removed_pair = pairs.pop().unwrap();
+                    currencies.pop();
+                    actions.pop();
+                    rates.pop();
+                    visited_pairs.remove(&removed_pair);
+                }
                 continue;
             }
 
-            let target = edge.target();
-            let target_currency = &self.graph[target];
+            // Get next edge to explore
+            let (target, pair, side, target_currency, rate) = frame.edges[frame.edge_iter_index].clone();
+            frame.edge_iter_index += 1;
 
-            // Don't revisit same pair
-            if visited_pairs.contains(&edge_data.pair) {
+            // Check constraints
+            if currencies.len() >= max_legs + 1 {
+                continue;
+            }
+
+            if visited_pairs.contains(&pair) {
                 continue;
             }
 
             // Don't revisit currencies except start
-            if target != start && currencies.contains(target_currency) {
+            if target != start && currencies.contains(&target_currency) {
                 continue;
             }
 
-            // Recurse
+            // Check if we found a cycle back to start
+            if target == start && !pairs.is_empty() {
+                // We have a valid cycle - record it
+                let mut final_currencies = currencies.clone();
+                final_currencies.push(target_currency.clone());
+
+                let mut final_pairs = pairs.clone();
+                final_pairs.push(pair.clone());
+
+                let mut final_actions = actions.clone();
+                final_actions.push(side.clone());
+
+                let mut final_rates = rates.clone();
+                final_rates.push(rate);
+
+                results.push(ArbitragePath {
+                    currencies: final_currencies,
+                    pairs: final_pairs,
+                    actions: final_actions,
+                    rates: final_rates,
+                });
+                continue;
+            }
+
+            // Not back to start - push state and explore further
             currencies.push(target_currency.clone());
-            pairs.push(edge_data.pair.clone());
-            actions.push(edge_data.side.clone());
-            rates.push(edge_data.rate);
-            visited_pairs.insert(edge_data.pair.clone());
+            pairs.push(pair.clone());
+            actions.push(side.clone());
+            rates.push(rate);
+            visited_pairs.insert(pair.clone());
 
-            self.dfs_find_cycles(
-                start,
-                target,
-                currencies,
-                pairs,
-                actions,
-                rates,
-                visited_pairs,
-                max_legs,
-                results,
-            );
+            // Collect edges from target node for next frame
+            let next_edges: Vec<(NodeIndex, String, String, String, f64)> = self.graph.edges(target)
+                .filter_map(|edge| {
+                    let edge_data = edge.weight();
+                    if !edge_data.valid || edge_data.rate <= 0.0 {
+                        return None;
+                    }
+                    let next_target = edge.target();
+                    let next_currency = self.graph[next_target].clone();
+                    Some((next_target, edge_data.pair.clone(), edge_data.side.clone(), next_currency, edge_data.rate))
+                })
+                .collect();
 
-            currencies.pop();
-            pairs.pop();
-            actions.pop();
-            rates.pop();
-            visited_pairs.remove(&edge_data.pair);
+            stack.push(StackFrame {
+                node: target,
+                edge_iter_index: 0,
+                edges: next_edges,
+            });
         }
     }
 

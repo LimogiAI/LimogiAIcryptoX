@@ -123,10 +123,16 @@ pub struct TradingGuard {
     config: RwLock<TradingConfig>,
     state: RwLock<CircuitBreakerState>,
 
-    // Atomic flags for fast checks
+    // Atomic flags for fast checks (avoid lock contention in hot path)
     enabled: AtomicBool,
     is_broken: AtomicBool,
     is_executing: AtomicBool,
+
+    // Cached config values as atomics for lock-free reads in hot path
+    // min_profit_threshold stored as u64 (bits representation of f64)
+    cached_min_profit_threshold_bits: AtomicU64,
+    // execution_mode: 0 = sequential, 1 = parallel
+    cached_execution_mode_parallel: AtomicBool,
 
     // Statistics
     trades_executed: AtomicU64,
@@ -140,8 +146,11 @@ pub struct TradingGuard {
 
 impl TradingGuard {
     pub fn new() -> Self {
+        let default_config = TradingConfig::default();
         Self {
-            config: RwLock::new(TradingConfig::default()),
+            cached_min_profit_threshold_bits: AtomicU64::new(default_config.min_profit_threshold.to_bits()),
+            cached_execution_mode_parallel: AtomicBool::new(default_config.execution_mode == "parallel"),
+            config: RwLock::new(default_config),
             state: RwLock::new(CircuitBreakerState::default()),
             enabled: AtomicBool::new(false),
             is_broken: AtomicBool::new(false),
@@ -157,8 +166,23 @@ impl TradingGuard {
     /// Update trading configuration
     pub fn update_config(&self, config: TradingConfig) {
         self.enabled.store(config.enabled, Ordering::SeqCst);
+        // Update cached atomic values for lock-free reads
+        self.cached_min_profit_threshold_bits.store(config.min_profit_threshold.to_bits(), Ordering::SeqCst);
+        self.cached_execution_mode_parallel.store(config.execution_mode == "parallel", Ordering::SeqCst);
         *self.config.write() = config;
         info!("Trading config updated");
+    }
+
+    /// Get cached min profit threshold (lock-free)
+    #[inline]
+    fn get_cached_min_profit_threshold(&self) -> f64 {
+        f64::from_bits(self.cached_min_profit_threshold_bits.load(Ordering::Relaxed))
+    }
+
+    /// Check if execution mode is parallel (lock-free)
+    #[inline]
+    fn is_parallel_mode(&self) -> bool {
+        self.cached_execution_mode_parallel.load(Ordering::Relaxed)
     }
 
     /// Get current configuration
@@ -235,8 +259,9 @@ impl TradingGuard {
     }
 
     /// Check if an opportunity passes all guards
+    /// Optimized with atomic reads for hot path - avoids lock contention
     pub fn check_opportunity(&self, path: &str, profit_pct: f64) -> GuardCheckResult {
-        // Fast atomic checks first
+        // Fast atomic checks first (no locks needed)
         if !self.enabled.load(Ordering::Relaxed) {
             return GuardCheckResult {
                 can_trade: false,
@@ -251,27 +276,30 @@ impl TradingGuard {
             };
         }
 
-        let config = self.config.read();
-        let state = self.state.read();
-
-        // Check if already executing (in sequential mode)
-        if config.execution_mode == "sequential" && state.is_executing {
+        // Check if already executing (in sequential mode) - lock-free
+        if !self.is_parallel_mode() && self.is_executing.load(Ordering::Relaxed) {
             return GuardCheckResult {
                 can_trade: false,
                 reason: Some("Trade already executing".to_string()),
             };
         }
 
-        // Check profit threshold
-        if profit_pct < config.min_profit_threshold {
+        // Check profit threshold using cached atomic value - lock-free
+        let min_threshold = self.get_cached_min_profit_threshold();
+        if profit_pct < min_threshold {
             return GuardCheckResult {
                 can_trade: false,
                 reason: Some(format!(
                     "Below threshold: {:.3}% < {:.3}%",
-                    profit_pct, config.min_profit_threshold
+                    profit_pct, min_threshold
                 )),
             };
         }
+
+        // For the remaining checks, we need to acquire locks
+        // These are less frequent than the above fast-path rejections
+        let config = self.config.read();
+        let state = self.state.read();
 
         // Check base currency filter
         if !self.check_base_currency(path, &config.base_currency) {

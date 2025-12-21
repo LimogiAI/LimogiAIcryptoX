@@ -135,8 +135,20 @@ impl OrderBookCache {
 
     /// Apply a single level update to bids or asks
     fn apply_level_update(levels: &mut Vec<OrderBookLevel>, update: OrderBookLevel, is_bid: bool) {
-        // Find existing level at this price
-        let pos = levels.iter().position(|l| (l.price - update.price).abs() < 1e-10);
+        // Find existing level at this price using relative comparison
+        // Uses relative epsilon for better handling across different price ranges
+        // (e.g., BTC at 50000 vs SHIB at 0.00001)
+        let pos = levels.iter().position(|l| {
+            let diff = (l.price - update.price).abs();
+            let max_price = l.price.abs().max(update.price.abs());
+            if max_price < 1e-10 {
+                // Both prices near zero - use absolute comparison
+                diff < 1e-15
+            } else {
+                // Use relative comparison: difference should be < 1e-9 relative to price
+                diff / max_price < 1e-9
+            }
+        });
         
         if update.qty == 0.0 {
             // Remove level
