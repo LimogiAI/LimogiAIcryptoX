@@ -446,7 +446,8 @@ impl TradingEngine {
 
     /// Get order book health statistics
     fn get_orderbook_health(&self) -> OrderBookHealth {
-        self.dispatcher.get_orderbook_health()
+        // Use event scanner's health (which uses PersistentGraph)
+        self.event_scanner.get_orderbook_health()
     }
 
     /// Get engine statistics

@@ -37,8 +37,6 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1
       - RUST_LOG=info
-    volumes:
-      - ./.env.live:/app/.env.live:ro
     ports:
       - "8000:8000"
     depends_on:

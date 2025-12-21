@@ -556,8 +556,88 @@ impl PersistentGraph {
         }
 
         let mut health = self.health.write();
-        health.total_pairs = (valid_pairs + invalid_pairs);
+        health.total_pairs = valid_pairs + invalid_pairs;
         health.valid_pairs = valid_pairs;
+        health.last_update = Utc::now().to_rfc3339();
+    }
+
+    /// Update health stats from cache with detailed skip reasons
+    pub fn update_health_from_cache(&self, cache: &OrderBookCache) {
+        // Health check thresholds
+        let min_depth: usize = 3;
+        let max_staleness_ms: i64 = 5000;
+        let max_spread_pct: f64 = 10.0;
+
+        let mut valid_pairs = 0u32;
+        let mut no_orderbook = 0u32;
+        let mut thin_depth = 0u32;
+        let mut stale = 0u32;
+        let mut bad_spread = 0u32;
+        let mut no_price = 0u32;
+
+        let mut total_freshness_ms = 0.0f64;
+        let mut total_spread_pct = 0.0f64;
+        let mut total_depth = 0.0f64;
+        let mut count_for_avg = 0u32;
+
+        for pair in self.edge_map.keys() {
+            if let Some(book) = cache.get_order_book(pair) {
+                let (best_bid, best_ask) = match (book.best_bid(), book.best_ask()) {
+                    (Some(b), Some(a)) => (b, a),
+                    _ => {
+                        no_price += 1;
+                        continue;
+                    }
+                };
+
+                // Check depth using bids/asks length
+                let bid_depth = book.bids.len();
+                let ask_depth = book.asks.len();
+                if bid_depth < min_depth || ask_depth < min_depth {
+                    thin_depth += 1;
+                    continue;
+                }
+
+                // Check staleness
+                let staleness = book.staleness_ms();
+                if staleness > max_staleness_ms {
+                    stale += 1;
+                    continue;
+                }
+
+                // Check spread
+                let spread_pct = (best_ask - best_bid) / best_bid * 100.0;
+                if spread_pct > max_spread_pct {
+                    bad_spread += 1;
+                    continue;
+                }
+
+                // Valid pair
+                valid_pairs += 1;
+                total_freshness_ms += staleness as f64;
+                total_spread_pct += spread_pct;
+                total_depth += (bid_depth + ask_depth) as f64 / 2.0;
+                count_for_avg += 1;
+            } else {
+                no_orderbook += 1;
+            }
+        }
+
+        let mut health = self.health.write();
+        health.total_pairs = self.edge_map.len() as u32;
+        health.valid_pairs = valid_pairs;
+        health.skipped_no_orderbook = no_orderbook;
+        health.skipped_thin_depth = thin_depth;
+        health.skipped_stale = stale;
+        health.skipped_bad_spread = bad_spread;
+        health.skipped_no_price = no_price;
+
+        if count_for_avg > 0 {
+            health.avg_freshness_ms = total_freshness_ms / count_for_avg as f64;
+            health.avg_spread_pct = total_spread_pct / count_for_avg as f64;
+            health.avg_depth = total_depth / count_for_avg as f64;
+        }
+
         health.last_update = Utc::now().to_rfc3339();
     }
 }

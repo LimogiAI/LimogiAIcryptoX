@@ -100,7 +100,7 @@ def get_settings() -> Settings:
     ]
 
     for env_path in env_files:
-        if os.path.exists(env_path):
+        if os.path.isfile(env_path):
             with open(env_path) as f:
                 for line in f:
                     line = line.strip()

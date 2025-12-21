@@ -568,6 +568,14 @@ impl EventDrivenScanner {
     pub fn debug_get_usd_connections(&self) -> Vec<String> {
         self.persistent_graph.read().get_connected_currencies("USD")
     }
+
+    /// Get order book health from the persistent graph
+    pub fn get_orderbook_health(&self) -> crate::types::OrderBookHealth {
+        // First update the health stats
+        self.persistent_graph.read().update_health_from_cache(&self.cache);
+        // Then return the health
+        self.persistent_graph.read().get_health()
+    }
 }
 
 /// Statistics for the event-driven scanner
