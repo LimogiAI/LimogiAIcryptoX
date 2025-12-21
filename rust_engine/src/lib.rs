@@ -25,7 +25,6 @@ mod scanner;
 mod slippage;
 mod trading_config;
 mod types;
-mod websocket;
 mod ws_v2;
 
 use crate::auth::KrakenAuth;
