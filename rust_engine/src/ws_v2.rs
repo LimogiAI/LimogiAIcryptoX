@@ -125,6 +125,26 @@ struct TempPairInfo {
     volume_24h: f64,
 }
 
+/// Bounded event channel capacity
+/// This limits memory usage when processing is slow
+/// If channel is full, new events are dropped (acceptable for order book updates)
+const EVENT_CHANNEL_CAPACITY: usize = 1000;
+
+/// Statistics for dropped events (for monitoring)
+pub struct EventChannelStats {
+    pub events_sent: AtomicU64,
+    pub events_dropped: AtomicU64,
+}
+
+impl Default for EventChannelStats {
+    fn default() -> Self {
+        Self {
+            events_sent: AtomicU64::new(0),
+            events_dropped: AtomicU64::new(0),
+        }
+    }
+}
+
 /// WebSocket v2 manager for Kraken
 pub struct KrakenWebSocketV2 {
     cache: Arc<OrderBookCache>,
@@ -135,8 +155,10 @@ pub struct KrakenWebSocketV2 {
     orderbook_depth: usize,
     // Symbol to pair name mapping (v2 uses symbols like "BTC/USD")
     symbol_to_pair: HashMap<String, String>,
-    // Channel to emit order book update events for event-driven scanning
-    event_tx: Option<mpsc::UnboundedSender<String>>,
+    // Bounded channel to emit order book update events for event-driven scanning
+    event_tx: Option<mpsc::Sender<String>>,
+    // Statistics for event channel
+    event_stats: Arc<EventChannelStats>,
 }
 
 impl KrakenWebSocketV2 {
@@ -150,19 +172,30 @@ impl KrakenWebSocketV2 {
             orderbook_depth: 25,
             symbol_to_pair: HashMap::new(),
             event_tx: None,
+            event_stats: Arc::new(EventChannelStats::default()),
         }
     }
 
-    /// Set the event channel for order book update notifications
-    pub fn set_event_channel(&mut self, tx: mpsc::UnboundedSender<String>) {
+    /// Set the event channel for order book update notifications (bounded)
+    pub fn set_event_channel(&mut self, tx: mpsc::Sender<String>) {
         self.event_tx = Some(tx);
     }
 
-    /// Get a receiver for order book update events
-    pub fn create_event_channel(&mut self) -> mpsc::UnboundedReceiver<String> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    /// Get a receiver for order book update events (bounded channel)
+    /// Returns (receiver, stats) - stats can be used to monitor dropped events
+    pub fn create_event_channel(&mut self) -> (mpsc::Receiver<String>, Arc<EventChannelStats>) {
+        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         self.event_tx = Some(tx);
-        rx
+        self.event_stats = Arc::new(EventChannelStats::default());
+        (rx, Arc::clone(&self.event_stats))
+    }
+
+    /// Get event channel statistics
+    pub fn get_event_stats(&self) -> (u64, u64) {
+        (
+            self.event_stats.events_sent.load(Ordering::Relaxed),
+            self.event_stats.events_dropped.load(Ordering::Relaxed),
+        )
     }
 
     pub fn set_max_pairs(&mut self, max_pairs: usize) {
@@ -397,8 +430,9 @@ impl KrakenWebSocketV2 {
             })
             .collect();
 
-        // Clone event channel for the task
+        // Clone event channel and stats for the task
         let event_tx = self.event_tx.clone();
+        let event_stats = Arc::clone(&self.event_stats);
 
         // Spawn WebSocket task
         let ws_depth = self.orderbook_depth;
@@ -415,6 +449,7 @@ impl KrakenWebSocketV2 {
                     &mut shutdown_rx,
                     ws_depth,
                     event_tx.clone(),
+                    Arc::clone(&event_stats),
                 ).await {
                     Ok(_) => {
                         if !is_running.load(Ordering::SeqCst) {
@@ -445,7 +480,8 @@ impl KrakenWebSocketV2 {
         messages_received: &Arc<AtomicU64>,
         shutdown_rx: &mut mpsc::Receiver<()>,
         depth: usize,
-        event_tx: Option<mpsc::UnboundedSender<String>>,
+        event_tx: Option<mpsc::Sender<String>>,
+        event_stats: Arc<EventChannelStats>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (ws_stream, _) = connect_async(KRAKEN_WS_V2_PUBLIC).await?;
         let (mut write, mut read) = ws_stream.split();
@@ -500,7 +536,7 @@ impl KrakenWebSocketV2 {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             messages_received.fetch_add(1, Ordering::Relaxed);
-                            Self::handle_v2_message(cache, symbol_to_pair, &text, &event_tx);
+                            Self::handle_v2_message(cache, symbol_to_pair, &text, &event_tx, &event_stats);
                         }
                         Some(Ok(Message::Ping(data))) => {
                             let _ = write.send(Message::Pong(data)).await;
@@ -536,11 +572,15 @@ impl KrakenWebSocketV2 {
         cache: &Arc<OrderBookCache>,
         symbol_to_pair: &HashMap<String, String>,
         text: &str,
-        event_tx: &Option<mpsc::UnboundedSender<String>>,
+        event_tx: &Option<mpsc::Sender<String>>,
+        event_stats: &Arc<EventChannelStats>,
     ) {
         let value: Value = match serde_json::from_str(text) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(e) => {
+                debug!("Failed to parse WebSocket message: {}", e);
+                return;
+            }
         };
 
         // Check for channel data (book, ticker, etc.)
@@ -550,7 +590,7 @@ impl KrakenWebSocketV2 {
             match channel {
                 "book" => {
                     let is_snapshot = msg_type == "snapshot";
-                    Self::handle_v2_book_message(cache, symbol_to_pair, &value, is_snapshot, event_tx);
+                    Self::handle_v2_book_message(cache, symbol_to_pair, &value, is_snapshot, event_tx, event_stats);
                 }
                 "ticker" => {
                     Self::handle_v2_ticker_message(cache, symbol_to_pair, &value);
@@ -601,7 +641,8 @@ impl KrakenWebSocketV2 {
         symbol_to_pair: &HashMap<String, String>,
         value: &Value,
         is_snapshot: bool,
-        event_tx: &Option<mpsc::UnboundedSender<String>>,
+        event_tx: &Option<mpsc::Sender<String>>,
+        event_stats: &Arc<EventChannelStats>,
     ) {
         // v2 book data can come as either:
         // 1. Array: [{"symbol": "BTC/USD", "bids": [...], "asks": [...]}]
@@ -652,10 +693,22 @@ impl KrakenWebSocketV2 {
                 cache.update_incremental(pair_name, bids, asks, 0);
             }
 
-            // Emit event for event-driven scanning
+            // Emit event for event-driven scanning using bounded channel
             if let Some(tx) = event_tx {
-                // Non-blocking send - if channel is full or closed, just skip
-                let _ = tx.send(pair_name.clone());
+                // Use try_send for non-blocking send with backpressure
+                match tx.try_send(pair_name.clone()) {
+                    Ok(_) => {
+                        event_stats.events_sent.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        // Channel is full - drop event (acceptable for order book updates)
+                        event_stats.events_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        // Channel closed - receiver dropped
+                        // This is expected during shutdown, don't log excessively
+                    }
+                }
             }
         }
     }

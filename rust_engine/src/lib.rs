@@ -198,14 +198,14 @@ impl TradingEngine {
         let (event_shutdown_tx, mut event_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
         *self.event_shutdown_tx.write() = Some(event_shutdown_tx);
 
-        // Get event receiver from WebSocket
-        let event_rx = self.runtime.block_on(async {
+        // Get event receiver from WebSocket (now returns bounded channel + stats)
+        let event_channel = self.runtime.block_on(async {
             let mut ws_guard = self.websocket_v2.write();
             if let Some(ws) = ws_guard.as_mut() {
-                let rx = ws.create_event_channel();
+                let (rx, stats) = ws.create_event_channel();
                 ws.start(max_pairs, depth).await
                     .map_err(|e| PyRuntimeError::new_err(format!("Failed to start WebSocket v2: {}", e)))?;
-                Ok::<_, PyErr>(Some(rx))
+                Ok::<_, PyErr>(Some((rx, stats)))
             } else {
                 Ok(None)
             }
@@ -215,11 +215,12 @@ impl TradingEngine {
         self.event_scanner.initialize_graph();
 
         // Spawn event listener task
-        if let Some(mut rx) = event_rx {
+        if let Some((mut rx, event_stats)) = event_channel {
             let event_scanner = Arc::clone(&self.event_scanner);
 
             self.runtime.spawn(async move {
-                info!("Event listener started for event-driven scanning");
+                info!("Event listener started for event-driven scanning (bounded channel, capacity=1000)");
+                let mut last_stats_log = std::time::Instant::now();
 
                 loop {
                     tokio::select! {
@@ -238,6 +239,21 @@ impl TradingEngine {
                             info!("Event listener shutdown");
                             break;
                         }
+                    }
+
+                    // Periodically log channel statistics (every 60 seconds)
+                    if last_stats_log.elapsed() > std::time::Duration::from_secs(60) {
+                        let sent = event_stats.events_sent.load(std::sync::atomic::Ordering::Relaxed);
+                        let dropped = event_stats.events_dropped.load(std::sync::atomic::Ordering::Relaxed);
+                        if dropped > 0 {
+                            tracing::warn!(
+                                "Event channel stats: sent={}, dropped={} ({:.2}% drop rate)",
+                                sent, dropped, (dropped as f64 / (sent + dropped) as f64) * 100.0
+                            );
+                        } else {
+                            tracing::debug!("Event channel stats: sent={}, dropped=0", sent);
+                        }
+                        last_stats_log = std::time::Instant::now();
                     }
                 }
             });
@@ -384,7 +400,7 @@ impl TradingEngine {
         let (event_shutdown_tx, mut event_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
         *self.event_shutdown_tx.write() = Some(event_shutdown_tx);
 
-        let mut event_rx = self.runtime.block_on(async {
+        let (mut event_rx, event_stats) = self.runtime.block_on(async {
             let mut ws = KrakenWebSocketV2::new(Arc::clone(&self.cache));
             ws.set_max_pairs(max_pairs);
             ws.set_orderbook_depth(depth);
@@ -397,14 +413,14 @@ impl TradingEngine {
             ws.fetch_initial_prices().await
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to fetch prices: {}", e)))?;
 
-            // Create event channel and start streaming
-            let rx = ws.create_event_channel();
+            // Create event channel and start streaming (bounded channel)
+            let (rx, stats) = ws.create_event_channel();
             ws.start(max_pairs, depth).await
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to start WebSocket v2: {}", e)))?;
 
             *self.websocket_v2.write() = Some(ws);
 
-            Ok::<_, PyErr>(rx)
+            Ok::<_, PyErr>((rx, stats))
         })?;
 
         // Reinitialize persistent graph for incremental updates (Phase 3)
@@ -413,7 +429,8 @@ impl TradingEngine {
         // Spawn new event listener task
         let event_scanner = Arc::clone(&self.event_scanner);
         self.runtime.spawn(async move {
-            info!("Event listener restarted for event-driven scanning");
+            info!("Event listener restarted for event-driven scanning (bounded channel)");
+            let mut last_stats_log = std::time::Instant::now();
 
             loop {
                 tokio::select! {
@@ -432,6 +449,19 @@ impl TradingEngine {
                         info!("Event listener shutdown");
                         break;
                     }
+                }
+
+                // Periodically log channel statistics (every 60 seconds)
+                if last_stats_log.elapsed() > std::time::Duration::from_secs(60) {
+                    let sent = event_stats.events_sent.load(std::sync::atomic::Ordering::Relaxed);
+                    let dropped = event_stats.events_dropped.load(std::sync::atomic::Ordering::Relaxed);
+                    if dropped > 0 {
+                        tracing::warn!(
+                            "Event channel stats: sent={}, dropped={} ({:.2}% drop rate)",
+                            sent, dropped, (dropped as f64 / (sent + dropped) as f64) * 100.0
+                        );
+                    }
+                    last_stats_log = std::time::Instant::now();
                 }
             }
         });
@@ -651,9 +681,7 @@ impl TradingEngine {
     fn disconnect_execution_engine(&self) -> PyResult<()> {
         let engine_guard = self.execution_engine.read();
         if let Some(engine) = engine_guard.as_ref() {
-            self.runtime.block_on(async {
-                engine.disconnect().await;
-            });
+            engine.disconnect();
         }
         Ok(())
     }

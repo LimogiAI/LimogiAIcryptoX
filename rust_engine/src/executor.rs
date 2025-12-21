@@ -293,6 +293,7 @@ pub struct ExecutionEngine {
     orders_sent: AtomicU64,
     orders_filled: AtomicU64,
     orders_failed: AtomicU64,
+    orders_timed_out: AtomicU64,
     total_volume: RwLock<f64>,
 
     // Phase 6: Dynamic fee optimization
@@ -300,6 +301,14 @@ pub struct ExecutionEngine {
     maker_orders_attempted: AtomicU64,
     maker_orders_filled: AtomicU64,
     total_fee_savings: RwLock<f64>,
+
+    // Reconnection control
+    should_reconnect: Arc<AtomicBool>,
+    reconnect_attempts: AtomicU64,
+    max_reconnect_attempts: u64,
+
+    // Cleanup task handle
+    cleanup_task_running: Arc<AtomicBool>,
 }
 
 impl ExecutionEngine {
@@ -315,12 +324,91 @@ impl ExecutionEngine {
             orders_sent: AtomicU64::new(0),
             orders_filled: AtomicU64::new(0),
             orders_failed: AtomicU64::new(0),
+            orders_timed_out: AtomicU64::new(0),
             total_volume: RwLock::new(0.0),
             fee_config: RwLock::new(FeeConfig::default()),
             maker_orders_attempted: AtomicU64::new(0),
             maker_orders_filled: AtomicU64::new(0),
             total_fee_savings: RwLock::new(0.0),
+            should_reconnect: Arc::new(AtomicBool::new(true)),
+            reconnect_attempts: AtomicU64::new(0),
+            max_reconnect_attempts: 10,
+            cleanup_task_running: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Start the pending order cleanup task
+    /// This runs periodically to clean up orders that have timed out without response
+    pub fn start_cleanup_task(&self) {
+        if self.cleanup_task_running.swap(true, Ordering::SeqCst) {
+            // Already running
+            return;
+        }
+
+        let pending_orders = Arc::clone(&self.pending_orders);
+        let orders_timed_out = Arc::new(AtomicU64::new(0));
+        let orders_timed_out_clone = Arc::clone(&orders_timed_out);
+        let cleanup_running = Arc::clone(&self.cleanup_task_running);
+
+        // Store reference to our counter
+        let self_orders_timed_out = &self.orders_timed_out;
+        let timeout_counter = self_orders_timed_out.load(Ordering::Relaxed);
+
+        tokio::spawn(async move {
+            info!("Started pending order cleanup task");
+
+            while cleanup_running.load(Ordering::Relaxed) {
+                // Run cleanup every 10 seconds
+                tokio::time::sleep(Duration::from_secs(10)).await;
+
+                let now = Instant::now();
+                let timeout_threshold = Duration::from_millis(ORDER_TIMEOUT_MS + 5000); // Extra 5s buffer
+
+                let mut timed_out_orders: Vec<String> = Vec::new();
+
+                // Find timed out orders
+                {
+                    let orders = pending_orders.read();
+                    for (client_id, pending) in orders.iter() {
+                        if now.duration_since(pending.created_at) > timeout_threshold {
+                            timed_out_orders.push(client_id.clone());
+                        }
+                    }
+                }
+
+                // Clean up timed out orders
+                if !timed_out_orders.is_empty() {
+                    let mut orders = pending_orders.write();
+                    for client_id in &timed_out_orders {
+                        if let Some(pending) = orders.remove(client_id) {
+                            warn!(
+                                "Cleaning up timed out order: {} (age: {:?})",
+                                client_id,
+                                now.duration_since(pending.created_at)
+                            );
+                            // Send timeout error to waiting task
+                            let _ = pending.response_tx.send(OrderResponse {
+                                order_id: pending.order_id.clone(),
+                                status: "timeout".to_string(),
+                                filled_qty: 0.0,
+                                avg_price: 0.0,
+                                fee: 0.0,
+                                error: Some("Order timed out during cleanup".to_string()),
+                            });
+                            orders_timed_out_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    info!("Cleaned up {} timed out pending orders", timed_out_orders.len());
+                }
+            }
+
+            info!("Pending order cleanup task stopped");
+        });
+    }
+
+    /// Stop the cleanup task
+    pub fn stop_cleanup_task(&self) {
+        self.cleanup_task_running.store(false, Ordering::SeqCst);
     }
 
     /// Update fee configuration
@@ -603,13 +691,25 @@ impl ExecutionEngine {
         self.req_id_counter.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Connect to Kraken WebSocket v2 private channels
+    /// Connect to Kraken WebSocket v2 private channels with automatic reconnection
     pub async fn connect(&self) -> Result<(), ExecutionError> {
+        self.should_reconnect.store(true, Ordering::SeqCst);
+        self.reconnect_attempts.store(0, Ordering::SeqCst);
+
+        // Start cleanup task if not already running
+        self.start_cleanup_task();
+
+        // Initial connection
+        self.connect_internal().await
+    }
+
+    /// Internal connection logic (called by connect and reconnection loop)
+    async fn connect_internal(&self) -> Result<(), ExecutionError> {
         if !self.auth.is_configured() {
             return Err(ExecutionError::NotAuthenticated);
         }
 
-        // Get WebSocket token
+        // Get fresh WebSocket token
         let token = self.auth
             .get_ws_token()
             .await
@@ -626,7 +726,7 @@ impl ExecutionEngine {
 
         // Create channel for sending messages
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        *self.ws_tx.write() = Some(tx);
+        *self.ws_tx.write() = Some(tx.clone());
 
         // Subscribe to executions channel
         let subscribe_msg = json!({
@@ -645,44 +745,293 @@ impl ExecutionEngine {
             .map_err(|e| ExecutionError::WebSocketError(e.to_string()))?;
 
         self.is_connected.store(true, Ordering::SeqCst);
+        self.reconnect_attempts.store(0, Ordering::SeqCst); // Reset on successful connect
         info!("Connected to Kraken private WebSocket");
 
         // Clone shared state for tasks
         let pending_orders = Arc::clone(&self.pending_orders);
         let is_connected = Arc::clone(&self.is_connected);
+        let should_reconnect = Arc::clone(&self.should_reconnect);
+        let _reconnect_attempts = self.reconnect_attempts.load(Ordering::Relaxed);
+        let max_reconnect = self.max_reconnect_attempts;
+        let auth = Arc::clone(&self.auth);
+        let ws_tx = Arc::clone(&self.ws_tx);
+        let req_id_counter = self.req_id_counter.load(Ordering::Relaxed);
 
-        // Spawn writer task
+        // Spawn writer task with heartbeat/ping support
+        let tx_for_heartbeat = tx.clone();
         tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if write.send(Message::Text(msg)).await.is_err() {
-                    break;
+            let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+            heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    // Handle outgoing messages
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(msg) => {
+                                if write.send(Message::Text(msg)).await.is_err() {
+                                    warn!("Failed to send message, WebSocket writer closing");
+                                    break;
+                                }
+                            }
+                            None => {
+                                debug!("Message channel closed, WebSocket writer stopping");
+                                break;
+                            }
+                        }
+                    }
+                    // Send periodic ping to keep connection alive
+                    _ = heartbeat_interval.tick() => {
+                        let ping_msg = json!({
+                            "method": "ping"
+                        });
+                        if write.send(Message::Text(ping_msg.to_string())).await.is_err() {
+                            warn!("Failed to send ping, WebSocket writer closing");
+                            break;
+                        }
+                        debug!("Sent ping to private WebSocket");
+                    }
                 }
             }
         });
 
-        // Spawn reader task
+        // Spawn reader task with reconnection logic
         tokio::spawn(async move {
-            while let Some(msg) = read.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        Self::handle_message(&pending_orders, &text);
+            let mut last_message_time = Instant::now();
+            let heartbeat_timeout = Duration::from_secs(60); // Consider disconnected if no message for 60s
+
+            loop {
+                tokio::select! {
+                    msg = read.next() => {
+                        match msg {
+                            Some(Ok(Message::Text(text))) => {
+                                last_message_time = Instant::now();
+                                Self::handle_message(&pending_orders, &text);
+                            }
+                            Some(Ok(Message::Ping(data))) => {
+                                last_message_time = Instant::now();
+                                // Respond with pong via the tx channel
+                                // Note: tungstenite handles ping/pong at protocol level
+                                debug!("Received ping from server");
+                            }
+                            Some(Ok(Message::Pong(_))) => {
+                                last_message_time = Instant::now();
+                                debug!("Received pong from server");
+                            }
+                            Some(Ok(Message::Close(frame))) => {
+                                warn!("Private WebSocket closed by server: {:?}", frame);
+                                is_connected.store(false, Ordering::SeqCst);
+                                break;
+                            }
+                            Some(Err(e)) => {
+                                error!("Private WebSocket error: {}", e);
+                                is_connected.store(false, Ordering::SeqCst);
+                                break;
+                            }
+                            None => {
+                                warn!("Private WebSocket stream ended");
+                                is_connected.store(false, Ordering::SeqCst);
+                                break;
+                            }
+                            _ => {}
+                        }
                     }
-                    Ok(Message::Close(_)) => {
-                        warn!("Private WebSocket closed by server");
-                        is_connected.store(false, Ordering::SeqCst);
-                        break;
+                    // Check for heartbeat timeout
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                        if last_message_time.elapsed() > heartbeat_timeout {
+                            warn!("Private WebSocket heartbeat timeout (no message for {:?})", heartbeat_timeout);
+                            is_connected.store(false, Ordering::SeqCst);
+                            break;
+                        }
                     }
-                    Err(e) => {
-                        error!("Private WebSocket error: {}", e);
-                        is_connected.store(false, Ordering::SeqCst);
-                        break;
-                    }
-                    _ => {}
                 }
+            }
+
+            // Attempt reconnection if enabled
+            if should_reconnect.load(Ordering::Relaxed) {
+                info!("Will attempt to reconnect private WebSocket...");
+                Self::reconnect_loop(
+                    auth,
+                    ws_tx,
+                    is_connected,
+                    should_reconnect,
+                    max_reconnect,
+                ).await;
             }
         });
 
         Ok(())
+    }
+
+    /// Reconnection loop for private WebSocket
+    async fn reconnect_loop(
+        auth: Arc<KrakenAuth>,
+        ws_tx: Arc<RwLock<Option<mpsc::UnboundedSender<String>>>>,
+        is_connected: Arc<AtomicBool>,
+        should_reconnect: Arc<AtomicBool>,
+        max_attempts: u64,
+    ) {
+        let mut attempt = 0u64;
+        let base_delay = Duration::from_secs(5);
+        let max_delay = Duration::from_secs(60);
+
+        while should_reconnect.load(Ordering::Relaxed) && attempt < max_attempts {
+            attempt += 1;
+            let delay = std::cmp::min(base_delay * (1 << attempt.min(4)), max_delay);
+
+            warn!(
+                "Reconnecting private WebSocket in {:?} (attempt {}/{})",
+                delay, attempt, max_attempts
+            );
+
+            tokio::time::sleep(delay).await;
+
+            if !should_reconnect.load(Ordering::Relaxed) {
+                info!("Reconnection cancelled");
+                break;
+            }
+
+            // Get fresh token
+            let token = match auth.get_ws_token().await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to get WebSocket token for reconnection: {}", e);
+                    continue;
+                }
+            };
+
+            // Attempt reconnection
+            match connect_async(KRAKEN_WS_V2_PRIVATE).await {
+                Ok((ws_stream, _)) => {
+                    let (mut write, mut read) = ws_stream.split();
+
+                    // Create new channel
+                    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+                    *ws_tx.write() = Some(tx.clone());
+
+                    // Subscribe to executions
+                    let subscribe_msg = json!({
+                        "method": "subscribe",
+                        "params": {
+                            "channel": "executions",
+                            "token": token,
+                            "snap_orders": true,
+                            "snap_trades": false
+                        },
+                        "req_id": 1
+                    });
+
+                    if write.send(Message::Text(subscribe_msg.to_string())).await.is_err() {
+                        error!("Failed to subscribe after reconnection");
+                        continue;
+                    }
+
+                    is_connected.store(true, Ordering::SeqCst);
+                    info!("Successfully reconnected to private WebSocket");
+
+                    // Spawn new writer task
+                    let should_reconnect_writer = Arc::clone(&should_reconnect);
+                    tokio::spawn(async move {
+                        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+
+                        loop {
+                            tokio::select! {
+                                msg = rx.recv() => {
+                                    match msg {
+                                        Some(msg) => {
+                                            if write.send(Message::Text(msg)).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        None => break,
+                                    }
+                                }
+                                _ = heartbeat_interval.tick() => {
+                                    let ping_msg = json!({"method": "ping"});
+                                    if write.send(Message::Text(ping_msg.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    // Continue reading in this task
+                    let pending_orders: Arc<RwLock<HashMap<String, PendingOrder>>> =
+                        Arc::new(RwLock::new(HashMap::new()));
+                    let mut last_message_time = Instant::now();
+
+                    loop {
+                        tokio::select! {
+                            msg = read.next() => {
+                                match msg {
+                                    Some(Ok(Message::Text(text))) => {
+                                        last_message_time = Instant::now();
+                                        Self::handle_message(&pending_orders, &text);
+                                    }
+                                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                                        is_connected.store(false, Ordering::SeqCst);
+                                        break;
+                                    }
+                                    _ => {
+                                        last_message_time = Instant::now();
+                                    }
+                                }
+                            }
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                                if last_message_time.elapsed() > Duration::from_secs(60) {
+                                    is_connected.store(false, Ordering::SeqCst);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Reset attempt counter on disconnect (will retry from 0)
+                    attempt = 0;
+                }
+                Err(e) => {
+                    error!("Reconnection failed: {}", e);
+                }
+            }
+        }
+
+        if attempt >= max_attempts {
+            error!("Max reconnection attempts ({}) reached, giving up", max_attempts);
+        }
+    }
+
+    /// Disconnect from private WebSocket and stop reconnection attempts
+    pub fn disconnect(&self) {
+        info!("Disconnecting from private WebSocket...");
+
+        // Stop reconnection attempts
+        self.should_reconnect.store(false, Ordering::SeqCst);
+
+        // Stop cleanup task
+        self.stop_cleanup_task();
+
+        // Mark as disconnected
+        self.is_connected.store(false, Ordering::SeqCst);
+
+        // Clear the write channel (this will cause writer task to exit)
+        *self.ws_tx.write() = None;
+
+        // Clear any pending orders with error
+        let mut orders = self.pending_orders.write();
+        for (_, pending) in orders.drain() {
+            let _ = pending.response_tx.send(OrderResponse {
+                order_id: pending.order_id,
+                status: "disconnected".to_string(),
+                filled_qty: 0.0,
+                avg_price: 0.0,
+                fee: 0.0,
+                error: Some("WebSocket disconnected".to_string()),
+            });
+        }
+
+        info!("Disconnected from private WebSocket");
     }
 
     /// Handle incoming WebSocket message
@@ -1099,13 +1448,6 @@ impl ExecutionEngine {
             orders_failed: self.orders_failed.load(Ordering::Relaxed),
             total_volume: *self.total_volume.read(),
         }
-    }
-
-    /// Disconnect from private WebSocket
-    pub async fn disconnect(&self) {
-        self.is_connected.store(false, Ordering::SeqCst);
-        *self.ws_tx.write() = None;
-        info!("Disconnected from private WebSocket");
     }
 
     // =========================================================================
