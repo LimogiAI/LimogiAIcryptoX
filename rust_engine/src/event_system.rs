@@ -312,11 +312,12 @@ impl EventDrivenScanner {
     }
 
     /// Try to auto-execute profitable opportunities
+    /// This spawns execution as an async task to avoid blocking the runtime
     fn try_auto_execute(&self, opportunities: &[Opportunity]) {
         // Get trading guard
         let guard_lock = self.trading_guard.read();
         let trading_guard = match guard_lock.as_ref() {
-            Some(g) => g,
+            Some(g) => Arc::clone(g),
             None => {
                 debug!("Auto-execution: No trading guard configured");
                 return;
@@ -331,17 +332,17 @@ impl EventDrivenScanner {
         // Get execution engine
         let engine_lock = self.execution_engine.read();
         let execution_engine_arc = match engine_lock.as_ref() {
-            Some(e) => e,
+            Some(e) => Arc::clone(e),
             None => {
                 debug!("Auto-execution: No execution engine configured");
                 return;
             }
         };
 
-        // Get runtime
+        // Get runtime handle for spawning
         let runtime_lock = self.runtime.read();
         let runtime = match runtime_lock.as_ref() {
-            Some(r) => r,
+            Some(r) => Arc::clone(r),
             None => {
                 debug!("Auto-execution: No runtime configured");
                 return;
@@ -383,99 +384,121 @@ impl EventDrivenScanner {
 
             self.auto_executions.fetch_add(1, Ordering::Relaxed);
 
-            // Execute via Rust execution engine
-            let execution_result = {
-                let engine_guard = execution_engine_arc.read();
-                match engine_guard.as_ref() {
-                    Some(engine) => {
-                        // Create opportunity for execution
-                        let exec_opp = Opportunity {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            path: opp.path.clone(),
-                            legs: opp.legs,
-                            gross_profit_pct: opp.gross_profit_pct,
-                            fees_pct: opp.fees_pct,
-                            net_profit_pct: opp.net_profit_pct,
-                            is_profitable: opp.is_profitable,
-                            detected_at: chrono::Utc::now(),
+            // Clone data for the async task
+            let exec_opp = Opportunity {
+                id: uuid::Uuid::new_v4().to_string(),
+                path: opp.path.clone(),
+                legs: opp.legs,
+                gross_profit_pct: opp.gross_profit_pct,
+                fees_pct: opp.fees_pct,
+                net_profit_pct: opp.net_profit_pct,
+                is_profitable: opp.is_profitable,
+                detected_at: chrono::Utc::now(),
+            };
+            let trade_amount = config.trade_amount;
+            let execution_mode = config.execution_mode.clone();
+
+            // Clone Arc references for the async task
+            let trading_guard_clone = Arc::clone(&trading_guard);
+            let execution_engine_clone = Arc::clone(&execution_engine_arc);
+            let auto_execution_successes = Arc::clone(&self.auto_execution_successes);
+            let trade_result_tx = Arc::clone(&self.trade_result_tx);
+
+            // Spawn the execution as an async task to avoid blocking
+            // Use spawn_blocking since we need to hold a parking_lot lock across await
+            let runtime_clone = Arc::clone(&runtime);
+            runtime.spawn(async move {
+                // Execute via Rust execution engine
+                // Use block_in_place to run the async code in a blocking context
+                // This works because spawn creates a new task on the runtime
+                let execution_result = tokio::task::block_in_place(|| {
+                    runtime_clone.block_on(async {
+                        let engine_guard = execution_engine_clone.read();
+                        match engine_guard.as_ref() {
+                            Some(engine) => {
+                                engine.execute_opportunity(&exec_opp, trade_amount).await
+                            }
+                            None => {
+                                Err(crate::executor::ExecutionError::NotConnected)
+                            }
+                        }
+                    })
+                });
+
+                // Handle missing engine case
+                if matches!(&execution_result, Err(crate::executor::ExecutionError::NotConnected)) {
+                    let engine_guard = execution_engine_clone.read();
+                    if engine_guard.is_none() {
+                        trading_guard_clone.finish_execution();
+                        warn!("Execution engine not available");
+                        return;
+                    }
+                }
+
+                // Finish execution flag
+                trading_guard_clone.finish_execution();
+
+                // Process result
+                match execution_result {
+                    Ok(trade_result) => {
+                        // Create TradeResult for recording and callback
+                        let result = TradeResult {
+                            trade_id: trade_result.id.clone(),
+                            path: trade_result.path.clone(),
+                            status: if trade_result.success { "COMPLETED".to_string() } else { "FAILED".to_string() },
+                            legs_completed: trade_result.legs.iter().filter(|l| l.success).count(),
+                            total_legs: trade_result.legs.len(),
+                            amount_in: trade_result.start_amount,
+                            amount_out: trade_result.end_amount,
+                            profit_pct: trade_result.profit_pct,
+                            profit_amount: trade_result.profit_amount,
+                            execution_time_ms: trade_result.total_duration_ms,
+                            error: trade_result.error.clone(),
+                            leg_details: trade_result.legs.iter().map(|l| {
+                                LegResult {
+                                    leg_index: l.leg_index,
+                                    pair: l.pair.clone(),
+                                    side: l.side.clone(),
+                                    amount_in: l.input_amount,
+                                    amount_out: l.output_amount,
+                                    price: l.avg_price,
+                                    fee: l.fee,
+                                    status: if l.success { "FILLED".to_string() } else { "FAILED".to_string() },
+                                }
+                            }).collect(),
                         };
 
-                        // Execute synchronously (blocking)
-                        runtime.block_on(async {
-                            engine.execute_opportunity(&exec_opp, config.trade_amount).await
-                        })
-                    }
-                    None => {
-                        trading_guard.finish_execution();
-                        warn!("Execution engine not available");
-                        continue;
-                    }
-                }
-            };
+                        // Record in trading guard
+                        trading_guard_clone.record_trade(&result);
 
-            // Finish execution flag
-            trading_guard.finish_execution();
+                        if trade_result.success {
+                            auto_execution_successes.fetch_add(1, Ordering::Relaxed);
+                            info!(
+                                "💰 Auto-execution SUCCESS: {} | Profit: ${:.4} ({:.3}%)",
+                                result.path, result.profit_amount, result.profit_pct
+                            );
+                        } else {
+                            warn!(
+                                "❌ Auto-execution FAILED: {} | Error: {:?}",
+                                result.path, result.error
+                            );
+                        }
 
-            // Process result
-            match execution_result {
-                Ok(trade_result) => {
-                    // Create TradeResult for recording and callback
-                    let result = TradeResult {
-                        trade_id: trade_result.id.clone(),
-                        path: trade_result.path.clone(),
-                        status: if trade_result.success { "COMPLETED".to_string() } else { "FAILED".to_string() },
-                        legs_completed: trade_result.legs.iter().filter(|l| l.success).count(),
-                        total_legs: trade_result.legs.len(),
-                        amount_in: trade_result.start_amount,
-                        amount_out: trade_result.end_amount,
-                        profit_pct: trade_result.profit_pct,
-                        profit_amount: trade_result.profit_amount,
-                        execution_time_ms: trade_result.total_duration_ms,
-                        error: trade_result.error.clone(),
-                        leg_details: trade_result.legs.iter().map(|l| {
-                            LegResult {
-                                leg_index: l.leg_index,
-                                pair: l.pair.clone(),
-                                side: l.side.clone(),
-                                amount_in: l.input_amount,
-                                amount_out: l.output_amount,
-                                price: l.avg_price,
-                                fee: l.fee,
-                                status: if l.success { "FILLED".to_string() } else { "FAILED".to_string() },
+                        // Send result to Python via callback channel
+                        if let Some(ref tx) = *trade_result_tx.read() {
+                            if tx.send(result).is_err() {
+                                warn!("Failed to send trade result to Python callback channel");
                             }
-                        }).collect(),
-                    };
-
-                    // Record in trading guard
-                    trading_guard.record_trade(&result);
-
-                    if trade_result.success {
-                        self.auto_execution_successes.fetch_add(1, Ordering::Relaxed);
-                        info!(
-                            "💰 Auto-execution SUCCESS: {} | Profit: ${:.4} ({:.3}%)",
-                            result.path, result.profit_amount, result.profit_pct
-                        );
-                    } else {
-                        warn!(
-                            "❌ Auto-execution FAILED: {} | Error: {:?}",
-                            result.path, result.error
-                        );
-                    }
-
-                    // Send result to Python via callback channel
-                    if let Some(ref tx) = *self.trade_result_tx.read() {
-                        if tx.send(result).is_err() {
-                            warn!("Failed to send trade result to Python callback channel");
                         }
                     }
+                    Err(e) => {
+                        warn!("Auto-execution error: {}", e);
+                    }
                 }
-                Err(e) => {
-                    warn!("Auto-execution error: {}", e);
-                }
-            }
+            });
 
             // In sequential mode, only execute one per cycle
-            if config.execution_mode == "sequential" {
+            if execution_mode == "sequential" {
                 break;
             }
         }
