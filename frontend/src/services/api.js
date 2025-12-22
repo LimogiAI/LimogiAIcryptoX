@@ -304,13 +304,8 @@ export const api = {
     return response.data;
   },
 
-  // Get live opportunities
-  async getLiveOpportunities(limit = 50, status = null, hours = 24) {
-    let url = `/api/live/opportunities?limit=${limit}&hours=${hours}`;
-    if (status) url += `&status=${status}`;
-    const response = await client.get(url);
-    return response.data;
-  },
+  // NOTE: getLiveOpportunities removed - was dead code (LiveOpportunity table never written to)
+  // All scanning happens in Rust, trade results are in live_trades table
 
   // Get live scanner status
   async getLiveScannerStatus() {

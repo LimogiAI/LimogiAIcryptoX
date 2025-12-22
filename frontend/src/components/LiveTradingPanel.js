@@ -17,8 +17,7 @@ export function LiveTradingPanel() {
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
   
-  // New: Opportunities and Scanner Status
-  const [opportunities, setOpportunities] = useState([]);
+  // Scanner Status (opportunities removed - was dead code)
   const [scannerStatus, setScannerStatus] = useState(null);
   
   // Partial trades tracking
@@ -65,12 +64,11 @@ export function LiveTradingPanel() {
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statusRes, configRes, tradesRes, positionsRes, opportunitiesRes, scannerRes, partialRes] = await Promise.all([
+      const [statusRes, configRes, tradesRes, positionsRes, scannerRes, partialRes] = await Promise.all([
         api.getLiveStatus(),
         api.getLiveConfig(),
         api.getLiveTrades(500), // Fetch more for filtering
         api.getLivePositions(),
-        api.getLiveOpportunities ? api.getLiveOpportunities(100, null, 24) : Promise.resolve({ opportunities: [] }),
         api.getLiveScannerStatus ? api.getLiveScannerStatus() : Promise.resolve(null),
         api.getLivePartialTrades ? api.getLivePartialTrades() : Promise.resolve({ trades: [] }),
       ]);
@@ -79,7 +77,6 @@ export function LiveTradingPanel() {
       setOptions(configRes.options);
       setTrades(tradesRes.trades || []);
       setPositions(positionsRes);
-      setOpportunities(opportunitiesRes?.opportunities || []);
       setScannerStatus(scannerRes);
       setPartialTrades(partialRes?.trades || []);
       if (configRes.config?.custom_currencies) setCustomCurrencies(configRes.config.custom_currencies);
@@ -900,63 +897,6 @@ export function LiveTradingPanel() {
             </span>
           </div>
         </div>
-      </div>
-
-      {/* Execution Log - Shows what happened to opportunities */}
-      <div className="opportunities-section">
-        <h3>📋 Execution Log</h3>
-        <p className="section-hint">Shows execution status of detected opportunities (EXECUTED/SKIPPED/MISSED)</p>
-        {opportunities.length === 0 ? (
-          <div className="empty-state">
-            <p>No execution history yet</p>
-            <p className="hint">When opportunities are processed, their status will appear here</p>
-          </div>
-        ) : (
-          <div className="opportunities-table-wrapper">
-            <table className="opportunities-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Path</th>
-                  <th>Expected Profit</th>
-                  <th>Status</th>
-                  <th>Reason / Trade</th>
-                </tr>
-              </thead>
-              <tbody>
-                {opportunities.slice(0, 20).map((opp, idx) => (
-                  <tr key={opp.id || idx} className={`opp-row ${opp.status?.toLowerCase()}`}>
-                    <td className="opp-time">{formatTimestamp(opp.found_at)}</td>
-                    <td className="opp-path">{opp.path}</td>
-                    <td className={`opp-profit ${opp.expected_profit_pct >= 0 ? 'positive' : 'negative'}`}>
-                      +{opp.expected_profit_pct?.toFixed(3)}%
-                      {opp.expected_profit_usd && (
-                        <span className="usd">(${opp.expected_profit_usd?.toFixed(4)})</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`opp-badge ${opp.status?.toLowerCase()}`}>
-                        {opp.status === 'EXECUTED' && '✅ '}
-                        {opp.status === 'SKIPPED' && '⏭️ '}
-                        {opp.status === 'MISSED' && '❌ '}
-                        {opp.status === 'PENDING' && '⏳ '}
-                        {opp.status === 'EXPIRED' && '⌛ '}
-                        {opp.status}
-                      </span>
-                    </td>
-                    <td className="opp-reason">
-                      {opp.trade_id ? (
-                        <span className="trade-link">Trade: {opp.trade_id.slice(-8)}</span>
-                      ) : (
-                        opp.status_reason || '--'
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       {/* Live Trades Table */}

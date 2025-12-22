@@ -149,36 +149,9 @@ class LivePosition(Base):
     last_synced_at = Column(DateTime, default=datetime.utcnow)
 
 
-class LiveOpportunity(Base):
-    """Record of opportunities found by live trading scanner"""
-    __tablename__ = "live_opportunities"
-
-    id = Column(Integer, primary_key=True, index=True)
-    
-    # When found
-    found_at = Column(DateTime, default=datetime.utcnow, index=True)
-    
-    # Opportunity details
-    path = Column(String(500), nullable=False, index=True)
-    legs = Column(Integer, nullable=False, default=3)
-    expected_profit_pct = Column(Float, nullable=False)
-    expected_profit_usd = Column(Float, nullable=True)
-    trade_amount = Column(Float, nullable=True)
-    
-    # Status: PENDING, EXECUTED, SKIPPED, MISSED, EXPIRED
-    status = Column(String(20), nullable=False, default='PENDING', index=True)
-    status_reason = Column(String(500), nullable=True)
-    
-    # Link to trade if executed
-    trade_id = Column(String(100), nullable=True, index=True)
-    
-    # Scan info
-    pairs_scanned = Column(Integer, nullable=True)
-    paths_found = Column(Integer, nullable=True)
-    
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+# NOTE: LiveOpportunity model removed - was never used (dead code from Python scanner era)
+# All scanning and execution now happens in Rust engine
+# Trade results are saved to LiveTrade table by Rust executor
 
 
 class LiveScannerStatus(Base):

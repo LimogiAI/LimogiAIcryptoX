@@ -511,33 +511,9 @@ async def quick_disable():
     }
 
 
-# ==========================================
-# Opportunities Endpoints
-# ==========================================
-
-@router.get("/opportunities")
-async def get_opportunities(
-    limit: int = Query(default=50, le=500),
-    status: Optional[str] = Query(default=None),
-    hours: int = Query(default=24, le=168),
-):
-    """
-    Get recent live opportunities.
-    
-    Status can be: PENDING, EXECUTED, SKIPPED, MISSED, EXPIRED
-    """
-    manager = get_manager()
-    
-    opportunities = manager.get_opportunities(
-        limit=limit,
-        status=status,
-        hours=hours,
-    )
-    
-    return {
-        "count": len(opportunities),
-        "opportunities": opportunities,
-    }
+# NOTE: /opportunities endpoint removed - LiveOpportunity was dead code
+# All scanning happens in Rust, trade results saved to live_trades table
+# Use /trades endpoint to see executed trades
 
 
 # ==========================================
