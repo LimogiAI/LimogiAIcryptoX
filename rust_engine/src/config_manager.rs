@@ -102,14 +102,4 @@ impl ConfigManager {
     pub fn get_config(&self) -> EngineConfig {
         self.config.read().clone()
     }
-
-    /// Get min profit threshold
-    pub fn get_min_profit_threshold(&self) -> f64 {
-        self.config.read().min_profit_threshold
-    }
-
-    /// Get fee rate
-    pub fn get_fee_rate(&self) -> f64 {
-        self.config.read().fee_rate
-    }
 }
