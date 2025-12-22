@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Book Health Guide - LimogiAI CryptoX</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            line-height: 1.7;
+            padding: 40px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(26, 26, 46, 0.95);
+            border-radius: 20px;
+            padding: 50px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        h1 {
+            color: #00d4aa;
+            font-size: 2.5rem;
+            text-align: center;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(0, 212, 170, 0.3);
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #888;
+            font-size: 1.1rem;
+            margin-bottom: 40px;
+        }
+
+        h2 {
+            color: #00d4aa;
+            font-size: 1.6rem;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid rgba(0, 212, 170, 0.3);
+        }
+
+        h3 {
+            color: #ffd700;
+            font-size: 1.3rem;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+
+        p {
+            margin-bottom: 15px;
+            color: #ccc;
+        }
+
+        .term-card {
+            background: linear-gradient(135deg, #252542 0%, #1e1e36 100%);
+            border-radius: 15px;
+            padding: 25px;
+            margin: 20px 0;
+            border-left: 4px solid #00d4aa;
+            transition: transform 0.3s ease;
+        }
+
+        .term-card:hover {
+            transform: translateX(5px);
+        }
+
+        .term-card.warning {
+            border-left-color: #ffd700;
+        }
+
+        .term-card.danger {
+            border-left-color: #ff6b6b;
+        }
+
+        .term-card.info {
+            border-left-color: #3498db;
+        }
+
+        .term-name {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .term-name .icon {
+            font-size: 1.5rem;
+        }
+
+        .term-simple {
+            background: rgba(0, 212, 170, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            border: 1px solid rgba(0, 212, 170, 0.2);
+        }
+
+        .term-simple strong {
+            color: #00d4aa;
+        }
+
+        .term-technical {
+            background: rgba(52, 152, 219, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            border: 1px solid rgba(52, 152, 219, 0.2);
+            font-size: 0.95rem;
+        }
+
+        .term-technical strong {
+            color: #3498db;
+        }
+
+        .example-box {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            border: 1px dashed #444;
+        }
+
+        .example-box h4 {
+            color: #9b59b6;
+            margin-bottom: 10px;
+            font-size: 1rem;
+        }
+
+        .threshold-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .threshold-table th {
+            background: #00d4aa;
+            color: #1a1a2e;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .threshold-table td {
+            padding: 15px;
+            border-bottom: 1px solid #333;
+        }
+
+        .threshold-table tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-green { background: #00d4aa; }
+        .status-yellow { background: #ffd700; }
+        .status-red { background: #ff6b6b; }
+
+        .analogy {
+            background: linear-gradient(135deg, rgba(155, 89, 182, 0.2), rgba(155, 89, 182, 0.05));
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            border-left: 3px solid #9b59b6;
+        }
+
+        .analogy::before {
+            content: "Everyday Analogy";
+            display: block;
+            color: #9b59b6;
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .formula {
+            background: #0a0a1a;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            color: #00d4aa;
+            border: 1px solid #333;
+        }
+
+        .toc {
+            background: rgba(0, 212, 170, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 40px;
+        }
+
+        .toc h3 {
+            color: #00d4aa;
+            margin-bottom: 15px;
+        }
+
+        .toc ul {
+            list-style: none;
+            columns: 2;
+        }
+
+        .toc li {
+            padding: 8px 0;
+        }
+
+        .toc a {
+            color: #888;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .toc a:hover {
+            color: #00d4aa;
+        }
+
+        .summary-box {
+            background: linear-gradient(135deg, rgba(0, 212, 170, 0.15), rgba(0, 212, 170, 0.05));
+            border-radius: 15px;
+            padding: 30px;
+            margin: 30px 0;
+            border: 1px solid rgba(0, 212, 170, 0.3);
+        }
+
+        .summary-box h3 {
+            color: #00d4aa;
+            margin-bottom: 20px;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 30px;
+            border-top: 1px solid #333;
+            color: #666;
+        }
+
+        @media print {
+            body {
+                background: white;
+                color: black;
+                padding: 20px;
+            }
+            .container {
+                box-shadow: none;
+                background: white;
+            }
+            .term-card, .analogy, .example-box, .term-simple, .term-technical {
+                border: 1px solid #ccc;
+                background: #f9f9f9;
+            }
+            h1, h2, h3, .term-name {
+                color: #333;
+            }
+            .toc ul {
+                columns: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Order Book Health Guide</h1>
+        <p class="subtitle">Understanding Every Metric in LimogiAI CryptoX</p>
+
+        <div class="toc">
+            <h3>Table of Contents</h3>
+            <ul>
+                <li><a href="#overview">1. Overview Metrics</a></li>
+                <li><a href="#valid-pairs">2. Valid Pairs</a></li>
+                <li><a href="#freshness">3. Freshness (Staleness)</a></li>
+                <li><a href="#spread">4. Bid-Ask Spread</a></li>
+                <li><a href="#depth">5. Order Book Depth</a></li>
+                <li><a href="#skip-reasons">6. Skip Reasons</a></li>
+                <li><a href="#thresholds">7. Validation Thresholds</a></li>
+                <li><a href="#why-matters">8. Why This Matters</a></li>
+            </ul>
+        </div>
+
+        <!-- SECTION 1: OVERVIEW -->
+        <h2 id="overview">1. Overview Metrics</h2>
+        <p>The Order Book Health panel shows you the quality of market data the system is receiving. Poor data quality leads to false opportunities and failed trades. Here's what each metric means:</p>
+
+        <!-- VALID PAIRS -->
+        <h2 id="valid-pairs">2. Valid Pairs</h2>
+        <div class="term-card">
+            <div class="term-name">
+                <span class="icon">&#9989;</span>
+                Valid Pairs
+            </div>
+
+            <div class="term-simple">
+                <strong>Simple Explanation:</strong> The number of trading pairs (like BTC/USD, ETH/EUR) that have good quality data right now and can be used for finding arbitrage opportunities.
+            </div>
+
+            <div class="analogy">
+                Imagine you have 300 shops in a mall, but only 250 have their price tags visible and up-to-date. You can only compare prices at those 250 shops. The other 50 are either closed, have old price tags, or their prices don't make sense.
+            </div>
+
+            <div class="term-technical">
+                <strong>Technical Details:</strong> A pair is considered "valid" when it passes ALL validation checks: has order book data (not just ticker), has at least 3 price levels on each side, data is less than 5 seconds old, and the bid-ask spread is reasonable (&lt;10%).
+            </div>
+
+            <div class="example-box">
+                <h4>Example Reading</h4>
+                <p><strong>Valid Pairs: 246 of 300 (82%)</strong></p>
+                <p>This means 246 trading pairs have reliable data. 54 pairs are being skipped due to various data quality issues. An 82% validity rate is healthy.</p>
+            </div>
+        </div>
+
+        <!-- FRESHNESS -->
+        <h2 id="freshness">3. Freshness (Staleness)</h2>
+        <div class="term-card warning">
+            <div class="term-name">
+                <span class="icon">&#9200;</span>
+                Average Freshness (in milliseconds)
+            </div>
+
+            <div class="term-simple">
+                <strong>Simple Explanation:</strong> How recently the price data was updated. Lower numbers mean fresher, more current prices. This is shown in milliseconds (1000ms = 1 second).
+            </div>
+
+            <div class="analogy">
+                Think of it like checking the timestamp on a news article. A story from 5 minutes ago is "stale" compared to one from 30 seconds ago. In fast-moving crypto markets, even 1-second-old prices can be outdated because prices change rapidly.
+            </div>
+
+            <div class="term-technical">
+                <strong>Technical Details:</strong> Freshness is calculated as the time difference between now and when the order book was last updated via WebSocket. The system receives real-time updates from Kraken's WebSocket v2 feed.
+            </div>
+
+            <div class="example-box">
+                <h4>Freshness Ratings</h4>
+                <p><span class="status-indicator status-green"></span> <strong>&lt; 500ms</strong> - Excellent (data is very fresh)</p>
+                <p><span class="status-indicator status-yellow"></span> <strong>500ms - 1500ms</strong> - Good (acceptable for most trades)</p>
+                <p><span class="status-indicator status-red"></span> <strong>&gt; 1500ms</strong> - Slow (prices may have changed)</p>
+            </div>
+
+            <div class="formula">
+                Freshness = Current Time - Last Update Time
+            </div>
+        </div>
+
+        <!-- SPREAD -->
+        <h2 id="spread">4. Bid-Ask Spread</h2>
+        <div class="term-card info">
+            <div class="term-name">
+                <span class="icon">&#8596;</span>
+                Average Spread (%)
+            </div>
+
+            <div class="term-simple">
+                <strong>Simple Explanation:</strong> The difference between the highest price someone will pay (bid) and the lowest price someone will sell for (ask), shown as a percentage. Lower spread = tighter market = easier to trade.
+            </div>
+
+            <div class="analogy">
+                Imagine selling a used phone. A buyer offers $400 (bid), but you want $420 (ask). The spread is $20 or 5%. If the buyer offers $418 and you want $420, the spread is only $2 or 0.5%. The smaller the gap, the easier it is to make a deal.
+            </div>
+
+            <div class="term-technical">
+                <strong>Technical Details:</strong> Spread is calculated as (Ask Price - Bid Price) / Bid Price * 100%. High-volume pairs like BTC/USD typically have tiny spreads (0.01-0.1%), while low-volume pairs may have spreads of 1-5% or more.
+            </div>
+
+            <div class="formula">
+                Spread % = (Ask Price - Bid Price) / Bid Price * 100
+            </div>
+
+            <div class="example-box">
+                <h4>Example</h4>
+                <p>If BTC/USD has:</p>
+                <p>- Best Bid: $42,000 (highest price buyers will pay)</p>
+                <p>- Best Ask: $42,050 (lowest price sellers will accept)</p>
+                <p>- Spread: $50 or <strong>0.119%</strong></p>
+                <p>This is a very tight spread, indicating a liquid market.</p>
+            </div>
+        </div>
+
+        <!-- DEPTH -->
+        <h2 id="depth">5. Order Book Depth</h2>
+        <div class="term-card">
+            <div class="term-name">
+                <span class="icon">&#128202;</span>
+                Average Depth (Levels per side)
+            </div>
+
+            <div class="term-simple">
+                <strong>Simple Explanation:</strong> How many different price levels exist in the order book. More depth means more liquidity - there are many buyers and sellers at different prices. The system tracks up to 25 levels on each side (bids and asks).
+            </div>
+
+            <div class="analogy">
+                Think of a staircase. Each step is a price level with orders waiting. A deep order book is like a long staircase with many steps - even if you need to buy/sell a large amount, you can work through multiple price levels. A shallow order book (few steps) means large orders will dramatically move the price.
+            </div>
+
+            <div class="term-technical">
+                <strong>Technical Details:</strong> Depth shows the average number of price levels across both sides of the order book. The system requires at least 3 levels on each side (bids and asks) to consider a pair valid. More depth protects against slippage.
+            </div>
+
+            <div class="example-box">
+                <h4>Example Order Book Depth</h4>
+                <p>For BTC/USD with 25 levels of depth:</p>
+                <p><strong>Bids (Buy Orders):</strong></p>
+                <p>Level 1: $42,000 (2.5 BTC) | Level 2: $41,990 (1.8 BTC) | Level 3: $41,980 (3.2 BTC) | ... up to Level 25</p>
+                <p><strong>Asks (Sell Orders):</strong></p>
+                <p>Level 1: $42,050 (1.2 BTC) | Level 2: $42,060 (2.1 BTC) | Level 3: $42,070 (0.8 BTC) | ... up to Level 25</p>
+            </div>
+        </div>
+
+        <!-- SKIP REASONS -->
+        <h2 id="skip-reasons">6. Skip Reasons (Why Pairs Are Excluded)</h2>
+        <p>When a trading pair fails validation, it's "skipped" and not used for finding opportunities. Here are all the possible reasons:</p>
+
+        <div class="term-card danger">
+            <div class="term-name">
+                <span class="icon">&#128237;</span>
+                No Order Book
+            </div>
+            <div class="term-simple">
+                <strong>What it means:</strong> The pair only has ticker data (last price) but no actual order book with bids and asks. Without knowing what prices people are willing to buy/sell at, we can't calculate if an arbitrage opportunity is real.
+            </div>
+            <div class="analogy">
+                It's like knowing a store sold a TV for $500 yesterday, but not knowing what price they're selling it for today or if they even have any in stock.
+            </div>
+        </div>
+
+        <div class="term-card warning">
+            <div class="term-name">
+                <span class="icon">&#128200;</span>
+                Thin Depth
+            </div>
+            <div class="term-simple">
+                <strong>What it means:</strong> The order book has fewer than 3 price levels on either the bid or ask side. This indicates low liquidity - there aren't enough orders to reliably execute trades.
+            </div>
+            <div class="analogy">
+                Imagine a staircase with only 1-2 steps. You can't walk up smoothly - you'd have to jump. Similarly, thin order books mean price can jump dramatically with small trades.
+            </div>
+        </div>
+
+        <div class="term-card danger">
+            <div class="term-name">
+                <span class="icon">&#9200;</span>
+                Stale Data
+            </div>
+            <div class="term-simple">
+                <strong>What it means:</strong> The order book data is more than 5 seconds old. In fast-moving crypto markets, 5-second-old prices are unreliable. The opportunity you see might already be gone.
+            </div>
+            <div class="analogy">
+                Like using a 5-minute-old traffic update to choose your route. The road might have cleared up or gotten worse since then.
+            </div>
+        </div>
+
+        <div class="term-card warning">
+            <div class="term-name">
+                <span class="icon">&#8596;</span>
+                Bad Spread
+            </div>
+            <div class="term-simple">
+                <strong>What it means:</strong> The bid-ask spread is greater than 10%, or is negative (which is impossible in a real market). This usually indicates bad/corrupt data rather than real market conditions.
+            </div>
+            <div class="analogy">
+                If someone wants to buy your car for $10,000 but the cheapest seller wants $15,000 (50% spread), something is wrong. Either the market is dead, or the data is incorrect.
+            </div>
+        </div>
+
+        <div class="term-card">
+            <div class="term-name">
+                <span class="icon">&#128176;</span>
+                No Price
+            </div>
+            <div class="term-simple">
+                <strong>What it means:</strong> The best bid or ask price is zero or missing. This can happen when an order book is completely empty on one side.
+            </div>
+        </div>
+
+        <div class="term-card info">
+            <div class="term-name">
+                <span class="icon">&Sigma;</span>
+                Total Skipped
+            </div>
+            <div class="term-simple">
+                <strong>What it means:</strong> The sum of all pairs that were excluded for any reason. Lower is better. A healthy system should have 80%+ valid pairs.
+            </div>
+        </div>
+
+        <!-- THRESHOLDS -->
+        <h2 id="thresholds">7. Validation Thresholds</h2>
+        <p>These are the rules the system uses to decide if data is good enough to use:</p>
+
+        <table class="threshold-table">
+            <thead>
+                <tr>
+                    <th>Check</th>
+                    <th>Threshold</th>
+                    <th>Why This Value?</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Minimum Depth</strong></td>
+                    <td>&ge; 3 levels per side</td>
+                    <td>Ensures there's enough liquidity to absorb small trades without significant slippage</td>
+                </tr>
+                <tr>
+                    <td><strong>Maximum Staleness</strong></td>
+                    <td>&lt; 5,000ms (5 seconds)</td>
+                    <td>Crypto prices can change significantly in 5 seconds. Older data is unreliable for arbitrage</td>
+                </tr>
+                <tr>
+                    <td><strong>Maximum Spread</strong></td>
+                    <td>&lt; 10%</td>
+                    <td>Spreads over 10% indicate either dead markets or corrupted data. Real liquid pairs have &lt;1% spreads</td>
+                </tr>
+                <tr>
+                    <td><strong>Maximum Profit</strong></td>
+                    <td>&lt; 5% gross profit</td>
+                    <td>"Too good to be true" opportunities (&gt;5% profit) are almost always bad data, not real arbitrage</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- WHY IT MATTERS -->
+        <h2 id="why-matters">8. Why Order Book Health Matters</h2>
+
+        <div class="summary-box">
+            <h3>The Bottom Line</h3>
+            <p>Order book health directly affects your trading success:</p>
+            <ul style="margin-left: 20px; margin-top: 15px;">
+                <li style="margin-bottom: 10px;"><strong>High Valid Pairs (&gt;80%):</strong> More opportunities can be found because more markets are usable</li>
+                <li style="margin-bottom: 10px;"><strong>Low Freshness (&lt;500ms):</strong> Prices are current, so opportunities are real when you see them</li>
+                <li style="margin-bottom: 10px;"><strong>Tight Spreads (&lt;0.5%):</strong> Less cost to enter/exit trades, more profit potential</li>
+                <li style="margin-bottom: 10px;"><strong>Good Depth (&gt;10 levels):</strong> Can execute larger trades without moving the price against yourself</li>
+            </ul>
+        </div>
+
+        <div class="term-card">
+            <div class="term-name">
+                <span class="icon">&#128161;</span>
+                Real-World Impact
+            </div>
+            <p>Consider this scenario:</p>
+            <div class="example-box">
+                <h4>Scenario: You spot a 0.5% arbitrage opportunity</h4>
+                <p><strong>With Good Health Data:</strong></p>
+                <ul style="margin-left: 20px;">
+                    <li>Freshness: 200ms - prices are current</li>
+                    <li>Spread: 0.1% - low trading cost</li>
+                    <li>Depth: 25 levels - can trade full amount</li>
+                    <li><span style="color: #00d4aa;">Result: 0.5% - 0.4% fees = 0.1% profit </span></li>
+                </ul>
+                <br>
+                <p><strong>With Poor Health Data:</strong></p>
+                <ul style="margin-left: 20px;">
+                    <li>Freshness: 3000ms - prices may have changed</li>
+                    <li>Spread: 0.8% - high trading cost</li>
+                    <li>Depth: 4 levels - will cause slippage</li>
+                    <li><span style="color: #ff6b6b;">Result: The 0.5% opportunity was stale data. Real prices show -0.2% (a loss)</span></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="summary-box">
+            <h3>Key Takeaways</h3>
+            <ol style="margin-left: 20px; margin-top: 15px;">
+                <li style="margin-bottom: 10px;">Green indicators = healthy data, more reliable opportunities</li>
+                <li style="margin-bottom: 10px;">Yellow/Red indicators = proceed with caution, data quality issues</li>
+                <li style="margin-bottom: 10px;">The system automatically skips bad data to protect you from false opportunities</li>
+                <li style="margin-bottom: 10px;">If most pairs are being skipped, there may be a network/connection issue</li>
+                <li style="margin-bottom: 10px;">Historical trends help you see if data quality is improving or degrading over time</li>
+            </ol>
+        </div>
+
+        <footer>
+            <p>LimogiAI CryptoX - Order Book Health Guide</p>
+            <p style="margin-top: 10px; font-size: 0.9rem;">This guide explains the data quality metrics used to ensure reliable arbitrage detection.</p>
+        </footer>
+    </div>
+</body>
+</html>

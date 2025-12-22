@@ -31,7 +31,7 @@ use crate::auth::KrakenAuth;
 use crate::config_manager::ConfigManager;
 use crate::dispatcher::Dispatcher;
 use crate::event_system::{EventDrivenScanner, ScanTriggerMode};
-use crate::executor::{ExecutionEngine, ExecutionMode, FeeConfig, OrderSide, PrePositionedBalances, TradeResult as ExecutorTradeResult};
+use crate::executor::{ExecutionEngine, FeeConfig, OrderSide, TradeResult as ExecutorTradeResult};
 use crate::order_book::OrderBookCache;
 use crate::trading_config::{TradingConfig, TradingGuard, CircuitBreakerState, GuardCheckResult, TradeResult as TradingTradeResult};
 use crate::types::{EngineConfig, EngineStats, EngineSettings, Opportunity, OrderBookHealth, SlippageResult};
@@ -798,117 +798,6 @@ impl TradingEngine {
     }
 
     // =========================================================================
-    // Phase 5: Parallel Leg Execution Methods
-    // =========================================================================
-
-    /// Analyze a path for parallel execution opportunities
-    /// Returns: (num_groups, can_fully_parallelize, estimated_speedup_pct)
-    ///
-    /// Args:
-    ///   path: The arbitrage path (e.g., "USD → BTC → ETH → USD")
-    ///   amount: The trade amount
-    ///   balances: Dict of pre-positioned balances {currency: amount}
-    #[pyo3(signature = (path, amount, balances=None))]
-    fn analyze_parallel_execution(
-        &self,
-        path: String,
-        amount: f64,
-        balances: Option<std::collections::HashMap<String, f64>>,
-    ) -> PyResult<(usize, bool, f64)> {
-        let engine_guard = self.execution_engine.read();
-        let engine = engine_guard.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Execution engine not initialized"))?;
-
-        let legs = engine.parse_path(&path, amount)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
-        let pre_positioned = match balances {
-            Some(b) => PrePositionedBalances { balances: b },
-            None => PrePositionedBalances::new(),
-        };
-
-        let plan = engine.analyze_parallel_opportunities(&legs, &pre_positioned);
-
-        Ok((
-            plan.groups.len(),
-            plan.can_fully_parallelize,
-            plan.estimated_speedup,
-        ))
-    }
-
-    /// Execute an arbitrage opportunity with parallel leg execution
-    /// Returns: (success, legs_completed, total_input, total_output, profit_pct, error_msg)
-    ///
-    /// Args:
-    ///   path: The arbitrage path (e.g., "USD → BTC → ETH → USD")
-    ///   amount: The trade amount
-    ///   balances: Dict of pre-positioned balances {currency: amount}
-    ///   mode: "sequential" (default) or "parallel"
-    #[pyo3(signature = (path, amount, balances=None, mode="sequential"))]
-    fn execute_opportunity_parallel(
-        &self,
-        path: String,
-        amount: f64,
-        balances: Option<std::collections::HashMap<String, f64>>,
-        mode: &str,
-    ) -> PyResult<(bool, usize, f64, f64, f64, String)> {
-        let engine_guard = self.execution_engine.read();
-        let engine = engine_guard.as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Execution engine not initialized"))?;
-
-        let pre_positioned = match balances {
-            Some(b) => PrePositionedBalances { balances: b },
-            None => PrePositionedBalances::new(),
-        };
-
-        let exec_mode = match mode.to_lowercase().as_str() {
-            "parallel" => ExecutionMode::Parallel,
-            _ => ExecutionMode::Sequential,
-        };
-
-        // Create a minimal opportunity for execution
-        let opportunity = Opportunity {
-            id: uuid::Uuid::new_v4().to_string(),
-            path: path.clone(),
-            legs: path.matches(" → ").count() + 1,
-            gross_profit_pct: 0.0,
-            fees_pct: 0.0,
-            net_profit_pct: 0.0,
-            is_profitable: true,
-            detected_at: chrono::Utc::now(),
-        };
-
-        let result = self.runtime.block_on(async {
-            engine.execute_opportunity_auto(&opportunity, amount, &pre_positioned, exec_mode).await
-        });
-
-        match result {
-            Ok(trade_result) => {
-                if trade_result.success {
-                    Ok((
-                        true,
-                        trade_result.legs.len(),
-                        trade_result.start_amount,
-                        trade_result.end_amount,
-                        trade_result.profit_pct,
-                        String::new(),
-                    ))
-                } else {
-                    Ok((
-                        false,
-                        trade_result.legs.iter().filter(|l| l.success).count(),
-                        trade_result.start_amount,
-                        trade_result.end_amount,
-                        trade_result.profit_pct,
-                        trade_result.error.unwrap_or_else(|| "Unknown error".to_string()),
-                    ))
-                }
-            }
-            Err(e) => Ok((false, 0, amount, 0.0, 0.0, e.to_string())),
-        }
-    }
-
-    // =========================================================================
     // Phase 6: Dynamic Fee Optimization Methods
     // =========================================================================
 
@@ -1053,8 +942,7 @@ impl TradingEngine {
         min_profit_threshold=None,
         max_daily_loss=None,
         max_total_loss=None,
-        base_currency=None,
-        execution_mode=None
+        base_currency=None
     ))]
     fn update_trading_config(
         &self,
@@ -1064,7 +952,6 @@ impl TradingEngine {
         max_daily_loss: Option<f64>,
         max_total_loss: Option<f64>,
         base_currency: Option<String>,
-        execution_mode: Option<String>,
     ) {
         let mut config = self.trading_guard.get_config();
 
@@ -1074,14 +961,13 @@ impl TradingEngine {
         if let Some(v) = max_daily_loss { config.max_daily_loss = v; }
         if let Some(v) = max_total_loss { config.max_total_loss = v; }
         if let Some(v) = base_currency { config.base_currency = v; }
-        if let Some(v) = execution_mode { config.execution_mode = v; }
 
         self.trading_guard.update_config(config);
     }
 
     /// Get current trading configuration
-    /// Returns: (enabled, trade_amount, min_profit_threshold, max_daily_loss, max_total_loss, base_currency, execution_mode)
-    fn get_trading_config(&self) -> (bool, f64, f64, f64, f64, String, String) {
+    /// Returns: (enabled, trade_amount, min_profit_threshold, max_daily_loss, max_total_loss, base_currency)
+    fn get_trading_config(&self) -> (bool, f64, f64, f64, f64, String) {
         let config = self.trading_guard.get_config();
         (
             config.enabled,
@@ -1090,7 +976,6 @@ impl TradingEngine {
             config.max_daily_loss,
             config.max_total_loss,
             config.base_currency,
-            config.execution_mode,
         )
     }
 

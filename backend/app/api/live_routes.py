@@ -2,11 +2,16 @@
 Live Trading API Routes
 
 Endpoints for controlling and monitoring live trading.
+
+SECURITY: All state-changing endpoints require API key authentication.
+Read-only endpoints (status, config GET) are public.
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from loguru import logger
+
+from app.core.auth import require_api_key
 
 
 router = APIRouter(prefix="/live", tags=["Live Trading"])
@@ -31,8 +36,6 @@ class ConfigUpdateRequest(BaseModel):
     min_profit_threshold: Optional[float] = None
     max_daily_loss: Optional[float] = None
     max_total_loss: Optional[float] = None
-    execution_mode: Optional[str] = None
-    max_parallel_trades: Optional[int] = None
     max_retries_per_leg: Optional[int] = None
     order_timeout_seconds: Optional[int] = None
     base_currency: Optional[str] = None
@@ -68,9 +71,9 @@ async def get_config():
     }
 
 
-@router.put("/config")
+@router.put("/config", dependencies=[Depends(require_api_key)])
 async def update_config(request: ConfigUpdateRequest):
-    """Update live trading configuration (syncs to Rust engine)"""
+    """Update live trading configuration (syncs to Rust engine). Requires API key."""
     manager = get_manager()
 
     updates = {k: v for k, v in request.dict().items() if v is not None}
@@ -91,7 +94,6 @@ async def update_config(request: ConfigUpdateRequest):
                 max_daily_loss=config.max_daily_loss,
                 max_total_loss=config.max_total_loss,
                 base_currency=config.base_currency,
-                execution_mode=config.execution_mode,
             )
             logger.info("Trading config synced to Rust engine")
         except Exception as e:
@@ -112,10 +114,10 @@ async def update_config(request: ConfigUpdateRequest):
 # Enable/Disable Endpoints
 # ==========================================
 
-@router.post("/enable")
+@router.post("/enable", dependencies=[Depends(require_api_key)])
 async def enable_live_trading(request: EnableRequest):
     """
-    Enable live trading (syncs to Rust engine).
+    Enable live trading (syncs to Rust engine). Requires API key.
 
     Requires:
     - confirm: true
@@ -144,9 +146,9 @@ async def enable_live_trading(request: EnableRequest):
     return result
 
 
-@router.post("/disable")
+@router.post("/disable", dependencies=[Depends(require_api_key)])
 async def disable_live_trading(reason: str = "Manual disable"):
-    """Disable live trading (syncs to Rust engine)"""
+    """Disable live trading (syncs to Rust engine). Requires API key."""
     manager = get_manager()
     result = manager.disable(reason)
 
@@ -189,9 +191,9 @@ async def get_circuit_breaker():
     return state.to_dict()
 
 
-@router.post("/circuit-breaker/reset")
+@router.post("/circuit-breaker/reset", dependencies=[Depends(require_api_key)])
 async def reset_circuit_breaker():
-    """Reset circuit breaker (does not reset loss counters)"""
+    """Reset circuit breaker (does not reset loss counters). Requires API key."""
     manager = get_manager()
     state = manager.reset_circuit_breaker()
     return {
@@ -201,9 +203,9 @@ async def reset_circuit_breaker():
     }
 
 
-@router.post("/circuit-breaker/trigger")
+@router.post("/circuit-breaker/trigger", dependencies=[Depends(require_api_key)])
 async def trigger_circuit_breaker(reason: str = "Manual trigger"):
-    """Manually trigger circuit breaker"""
+    """Manually trigger circuit breaker. Requires API key."""
     manager = get_manager()
     manager.trigger_circuit_breaker(reason)
     state = manager.get_circuit_breaker_state()
@@ -218,9 +220,9 @@ async def trigger_circuit_breaker(reason: str = "Manual trigger"):
 # Stats Reset Endpoints
 # ==========================================
 
-@router.post("/reset-daily")
+@router.post("/reset-daily", dependencies=[Depends(require_api_key)])
 async def reset_daily_stats():
-    """Reset daily statistics"""
+    """Reset daily statistics. Requires API key."""
     manager = get_manager()
     state = manager.reset_daily_stats()
     return {
@@ -230,14 +232,14 @@ async def reset_daily_stats():
     }
 
 
-@router.post("/reset-all")
+@router.post("/reset-all", dependencies=[Depends(require_api_key)])
 async def reset_all_stats(
     confirm: bool = Query(default=False),
     confirm_text: str = Query(default=""),
 ):
     """
-    Reset ALL statistics (use with caution!).
-    
+    Reset ALL statistics (use with caution!). Requires API key.
+
     Requires:
     - confirm: true
     - confirm_text: "reset all stats"
@@ -260,13 +262,13 @@ async def reset_all_stats(
     }
 
 
-@router.post("/reset-partial")
+@router.post("/reset-partial", dependencies=[Depends(require_api_key)])
 async def reset_partial_stats(
     confirm: bool = Query(default=False),
 ):
     """
-    Reset partial trade statistics only.
-    
+    Reset partial trade statistics only. Requires API key.
+
     Use when you've manually resolved partial trades outside the system.
     """
     if not confirm:
@@ -291,11 +293,11 @@ async def reset_partial_stats(
 # Trade Execution Endpoints
 # ==========================================
 
-@router.post("/execute")
+@router.post("/execute", dependencies=[Depends(require_api_key)])
 async def execute_trade(request: ExecuteTradeRequest):
     """
-    Manually execute a live trade.
-    
+    Manually execute a live trade. Requires API key.
+
     Use this for testing or manual arbitrage execution.
     """
     manager = get_manager()
@@ -368,11 +370,11 @@ async def get_trade(trade_id: str):
 # Partial Trade Resolution Endpoints
 # ==========================================
 
-@router.post("/trades/{trade_id}/resolve")
+@router.post("/trades/{trade_id}/resolve", dependencies=[Depends(require_api_key)])
 async def resolve_partial_trade(trade_id: str):
     """
-    Resolve a PARTIAL trade by selling the held currency back to USD.
-    
+    Resolve a PARTIAL trade by selling the held currency back to USD. Requires API key.
+
     This will:
     1. Sell the held crypto for USD
     2. Calculate actual P/L
@@ -488,9 +490,9 @@ async def get_positions():
 # Quick Actions for UI
 # ==========================================
 
-@router.post("/quick-disable")
+@router.post("/quick-disable", dependencies=[Depends(require_api_key)])
 async def quick_disable():
-    """Quick disable for emergency stop button (syncs to Rust)"""
+    """Quick disable for emergency stop button (syncs to Rust). Requires API key."""
     manager = get_manager()
     manager.disable("Emergency stop")
     manager.trigger_circuit_breaker("Emergency stop")
@@ -527,9 +529,9 @@ async def get_scanner_status():
     return manager.get_scanner_status()
 
 
-@router.post("/scanner/start")
+@router.post("/scanner/start", dependencies=[Depends(require_api_key)])
 async def start_scanner():
-    """Start the UI cache manager (fetches from Rust engine for UI)"""
+    """Start the UI cache manager (fetches from Rust engine for UI). Requires API key."""
     from app.core.live_trading import get_ui_cache
 
     ui_cache = get_ui_cache()
@@ -546,9 +548,9 @@ async def start_scanner():
     }
 
 
-@router.post("/scanner/stop")
+@router.post("/scanner/stop", dependencies=[Depends(require_api_key)])
 async def stop_scanner():
-    """Stop the UI cache manager"""
+    """Stop the UI cache manager. Requires API key."""
     from app.core.live_trading import get_ui_cache
 
     ui_cache = get_ui_cache()
@@ -596,14 +598,12 @@ class RustExecuteRequest(BaseModel):
     """Request to execute via Rust engine"""
     path: str
     amount: float
-    mode: str = "sequential"  # "sequential" or "parallel"
-    balances: Optional[Dict[str, float]] = None  # Pre-positioned balances for parallel
 
 
-@router.post("/execution-engine/init")
+@router.post("/execution-engine/init", dependencies=[Depends(require_api_key)])
 async def init_execution_engine(request: RustExecutionConfigRequest):
     """
-    Initialize the Rust execution engine with Kraken API credentials.
+    Initialize the Rust execution engine with Kraken API credentials. Requires API key.
 
     This must be called before using any Rust-based execution features.
     The engine will use WebSocket v2 for faster order placement (~50ms vs ~500ms REST).
@@ -617,7 +617,6 @@ async def init_execution_engine(request: RustExecutionConfigRequest):
             "message": "Rust execution engine initialized",
             "features": {
                 "websocket_execution": True,
-                "parallel_execution": True,
                 "fee_optimization": True,
             }
         }
@@ -626,10 +625,10 @@ async def init_execution_engine(request: RustExecutionConfigRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/execution-engine/connect")
+@router.post("/execution-engine/connect", dependencies=[Depends(require_api_key)])
 async def connect_execution_engine():
     """
-    Connect the Rust execution engine to Kraken's private WebSocket.
+    Connect the Rust execution engine to Kraken's private WebSocket. Requires API key.
 
     Must call /init first with API credentials.
     """
@@ -647,9 +646,9 @@ async def connect_execution_engine():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/execution-engine/disconnect")
+@router.post("/execution-engine/disconnect", dependencies=[Depends(require_api_key)])
 async def disconnect_execution_engine():
-    """Disconnect the Rust execution engine from Kraken's private WebSocket."""
+    """Disconnect the Rust execution engine from Kraken's private WebSocket. Requires API key."""
     try:
         engine = get_engine()
         engine.disconnect_execution_engine()
@@ -677,7 +676,7 @@ async def get_execution_engine_status():
             engine.get_trading_stats()
 
         # Get trading config from Rust
-        enabled, trade_amount, min_profit, max_daily, max_total, base_currency, exec_mode = \
+        enabled, trade_amount, min_profit, max_daily, max_total, base_currency = \
             engine.get_trading_config()
 
         # Get circuit breaker state
@@ -706,7 +705,6 @@ async def get_execution_engine_status():
                 "max_daily_loss": max_daily,
                 "max_total_loss": max_total,
                 "base_currency": base_currency,
-                "execution_mode": exec_mode,
             },
             "circuit_breaker": {
                 "is_broken": is_broken,
@@ -721,16 +719,13 @@ async def get_execution_engine_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/execution-engine/execute")
+@router.post("/execution-engine/execute", dependencies=[Depends(require_api_key)])
 async def execute_via_rust(request: RustExecuteRequest):
     """
-    Execute an arbitrage opportunity via the Rust execution engine.
+    Execute an arbitrage opportunity via the Rust execution engine. Requires API key.
 
-    Modes:
-    - "sequential": Execute legs one after another (safest)
-    - "parallel": Execute independent legs in parallel (faster, requires pre-positioned funds)
-
-    For parallel mode, provide balances dict with pre-positioned amounts.
+    Executes legs sequentially, waiting for each to complete before the next.
+    This is the safest approach for triangular arbitrage.
     """
     try:
         engine = get_engine()
@@ -741,17 +736,8 @@ async def execute_via_rust(request: RustExecuteRequest):
                 detail="Execution engine not connected. Call /execution-engine/connect first."
             )
 
-        if request.mode == "parallel" and request.balances:
-            success, legs_completed, total_input, total_output, profit_pct, error = \
-                engine.execute_opportunity_parallel(
-                    request.path,
-                    request.amount,
-                    request.balances,
-                    request.mode
-                )
-        else:
-            success, legs_completed, total_input, total_output, profit_pct, error = \
-                engine.execute_opportunity(request.path, request.amount)
+        success, legs_completed, total_input, total_output, profit_pct, error = \
+            engine.execute_opportunity(request.path, request.amount)
 
         return {
             "success": success,
@@ -761,7 +747,6 @@ async def execute_via_rust(request: RustExecuteRequest):
             "profit_pct": profit_pct,
             "profit_amount": total_output - total_input,
             "error": error if error else None,
-            "execution_mode": request.mode,
         }
     except Exception as e:
         logger.error(f"Rust execution failed: {e}")
@@ -853,10 +838,10 @@ async def get_kraken_account_fees():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/sync-kraken-fees")
+@router.post("/sync-kraken-fees", dependencies=[Depends(require_api_key)])
 async def sync_kraken_fees_to_engine():
     """
-    Fetch real fees from Kraken and update the Rust engine to use them.
+    Fetch real fees from Kraken and update the Rust engine to use them. Requires API key.
 
     This ensures profit calculations use your actual fee tier instead of defaults.
     Call this after connecting to update fees based on your trading volume.
@@ -928,10 +913,10 @@ async def sync_kraken_fees_to_engine():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/fee-config")
+@router.put("/fee-config", dependencies=[Depends(require_api_key)])
 async def update_fee_config(request: FeeConfigRequest):
     """
-    Update fee optimization configuration.
+    Update fee optimization configuration. Requires API key.
 
     Fee optimization automatically selects maker vs taker orders based on:
     - Opportunity profit margin
@@ -984,39 +969,3 @@ async def get_fee_optimization_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ==========================================
-# Parallel Execution Analysis (Phase 5)
-# ==========================================
-
-@router.post("/analyze-parallel")
-async def analyze_parallel_execution(
-    path: str = Query(..., description="Arbitrage path (e.g., 'USD → BTC → ETH → USD')"),
-    amount: float = Query(..., description="Trade amount"),
-    balances: Optional[Dict[str, float]] = None,
-):
-    """
-    Analyze if parallel execution would benefit a given path.
-
-    Returns the execution plan showing which legs can run in parallel
-    and the estimated speedup.
-    """
-    try:
-        engine = get_engine()
-
-        num_groups, can_fully_parallelize, estimated_speedup = \
-            engine.analyze_parallel_execution(path, amount, balances)
-
-        return {
-            "path": path,
-            "amount": amount,
-            "analysis": {
-                "execution_groups": num_groups,
-                "can_fully_parallelize": can_fully_parallelize,
-                "estimated_speedup_pct": estimated_speedup,
-                "recommendation": "Use parallel mode" if estimated_speedup > 10 else "Use sequential mode",
-            },
-            "pre_positioned_balances": balances or {},
-        }
-    except Exception as e:
-        logger.error(f"Failed to analyze parallel execution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))

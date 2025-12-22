@@ -195,7 +195,6 @@ async def lifespan(app: FastAPI):
                             max_daily_loss=py_config.max_daily_loss,
                             max_total_loss=py_config.max_total_loss,
                             base_currency=py_config.base_currency,
-                            execution_mode=py_config.execution_mode,
                         )
                         # Also ensure Python config is disabled on startup
                         if py_config.is_enabled:

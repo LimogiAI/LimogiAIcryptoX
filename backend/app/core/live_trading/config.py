@@ -24,10 +24,6 @@ class LiveTradingSettings:
     max_daily_loss: float = 30.0
     max_total_loss: float = 30.0
     
-    # Execution mode
-    execution_mode: str = 'sequential'  # 'sequential' or 'parallel'
-    max_parallel_trades: int = 1
-    
     # Order execution
     max_retries_per_leg: int = 2
     order_timeout_seconds: int = 15
@@ -52,8 +48,6 @@ class LiveTradingSettings:
             'min_profit_threshold': self.min_profit_threshold,
             'max_daily_loss': self.max_daily_loss,
             'max_total_loss': self.max_total_loss,
-            'execution_mode': self.execution_mode,
-            'max_parallel_trades': self.max_parallel_trades,
             'max_retries_per_leg': self.max_retries_per_leg,
             'order_timeout_seconds': self.order_timeout_seconds,
             'base_currency': self.base_currency,
@@ -68,15 +62,12 @@ TRADE_AMOUNT_OPTIONS = [5.0, 10.0, 15.0, 20.0, 25.0, 50.0, 75.0, 100.0]
 TRADE_AMOUNT_MIN = 5.0
 TRADE_AMOUNT_MAX = 100.0
 
-MIN_PROFIT_OPTIONS = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]  # Percentages
+MIN_PROFIT_OPTIONS = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]  # Percentages
 MIN_PROFIT_MIN = 0.0
-MIN_PROFIT_MAX = 0.50
+MIN_PROFIT_MAX = 0.90
 
 MAX_LOSS_MIN = 10.0
 MAX_LOSS_MAX = 200.0
-
-EXECUTION_MODES = ['sequential', 'parallel']
-MAX_PARALLEL_OPTIONS = [1, 2, 3, 4, 5]
 
 BASE_CURRENCY_OPTIONS = ['ALL', 'USD', 'EUR', 'USDT', 'BTC', 'ETH', 'CUSTOM']
 
@@ -124,8 +115,6 @@ class ConfigManager:
                 min_profit_threshold=config.min_profit_threshold,
                 max_daily_loss=config.max_daily_loss,
                 max_total_loss=config.max_total_loss,
-                execution_mode=config.execution_mode,
-                max_parallel_trades=config.max_parallel_trades,
                 max_retries_per_leg=config.max_retries_per_leg,
                 order_timeout_seconds=config.order_timeout_seconds,
                 base_currency=config.base_currency,
@@ -165,15 +154,15 @@ class ConfigManager:
                     raise ValueError("trade_amount must be greater than 0")
             
             if 'min_profit_threshold' in updates:
-                # Accept as percentage (0-0.5) or as decimal (0-0.005)
+                # Accept as percentage (0-0.9) or as decimal (0-0.009)
                 val = float(updates['min_profit_threshold'])
                 # If value is > 0.01, assume it's a percentage like 0.3 meaning 0.3%
                 if val > 0.01:
                     val = val / 100  # Convert 0.3 -> 0.003
-                if 0 <= val <= 0.005:  # 0% to 0.5%
+                if 0 <= val <= 0.009:  # 0% to 0.9%
                     config.min_profit_threshold = val
                 else:
-                    raise ValueError(f"min_profit_threshold must be between 0 and 0.5%")
+                    raise ValueError(f"min_profit_threshold must be between 0 and 0.9%")
             
             if 'max_daily_loss' in updates:
                 val = float(updates['max_daily_loss'])
@@ -188,20 +177,6 @@ class ConfigManager:
                     config.max_total_loss = val
                 else:
                     raise ValueError(f"max_total_loss must be between {MAX_LOSS_MIN} and {MAX_LOSS_MAX}")
-            
-            if 'execution_mode' in updates:
-                val = updates['execution_mode']
-                if val in EXECUTION_MODES:
-                    config.execution_mode = val
-                else:
-                    raise ValueError(f"execution_mode must be one of {EXECUTION_MODES}")
-            
-            if 'max_parallel_trades' in updates:
-                val = int(updates['max_parallel_trades'])
-                if 1 <= val <= 5:
-                    config.max_parallel_trades = val
-                else:
-                    raise ValueError("max_parallel_trades must be between 1 and 5")
             
             if 'max_retries_per_leg' in updates:
                 val = int(updates['max_retries_per_leg'])
@@ -304,12 +279,6 @@ class ConfigManager:
                 'min': MAX_LOSS_MIN,
                 'max': MAX_LOSS_MAX,
                 'unit': 'USD',
-            },
-            'execution_mode': {
-                'options': EXECUTION_MODES,
-            },
-            'max_parallel_trades': {
-                'options': MAX_PARALLEL_OPTIONS,
             },
             'base_currency': {
                 'options': BASE_CURRENCY_OPTIONS,

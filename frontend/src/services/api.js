@@ -1,14 +1,38 @@
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_KEY = process.env.REACT_APP_API_KEY || '';
 
 const client = axios.create({
   baseURL: API_URL,
   timeout: 120000,
   headers: {
     'Content-Type': 'application/json',
+    // Include API key for authenticated requests
+    ...(API_KEY && { 'X-API-Key': API_KEY }),
   },
 });
+
+// Add request interceptor to ensure API key is always included
+client.interceptors.request.use((config) => {
+  if (API_KEY && !config.headers['X-API-Key']) {
+    config.headers['X-API-Key'] = API_KEY;
+  }
+  return config;
+});
+
+// Add response interceptor to handle auth errors
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      console.error('API Authentication required. Set REACT_APP_API_KEY in your .env file.');
+    } else if (error.response?.status === 403) {
+      console.error('API Authentication failed. Check your REACT_APP_API_KEY.');
+    }
+    return Promise.reject(error);
+  }
+);
 
 export const api = {
   // Scanner status
@@ -354,13 +378,11 @@ export const api = {
     return response.data;
   },
 
-  // Execute trade via Rust engine
-  async executeViaRustEngine(path, amount, mode = 'sequential', balances = null) {
+  // Execute trade via Rust engine (sequential execution)
+  async executeViaRustEngine(path, amount) {
     const response = await client.post('/api/live/execution-engine/execute', {
       path,
       amount,
-      mode,
-      balances,
     });
     return response.data;
   },
@@ -392,16 +414,6 @@ export const api = {
   // Sync Kraken fees to engine (fetch real fees and update engine)
   async syncKrakenFees() {
     const response = await client.post('/api/live/sync-kraken-fees');
-    return response.data;
-  },
-
-  // Analyze parallel execution opportunity
-  async analyzeParallelExecution(path, amount, balances = null) {
-    const response = await client.post('/api/live/analyze-parallel', {
-      path,
-      amount,
-      balances,
-    });
     return response.data;
   },
 };

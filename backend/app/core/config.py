@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     app_name: str = "LimogiAICryptoX"
     debug: bool = False
 
+    # ===========================================
+    # API Authentication
+    # ===========================================
+    # Set LIMOGI_API_KEY in .env to protect trading endpoints
+    # Generate a key with: python -c "import secrets; print(secrets.token_hex(16))"
+    limogi_api_key: Optional[str] = None
+    auth_enabled: bool = True  # Set to False to disable auth (dev only!)
+
     class Config:
         env_file = ".env"
         extra = "ignore"

@@ -396,7 +396,6 @@ impl EventDrivenScanner {
                 detected_at: chrono::Utc::now(),
             };
             let trade_amount = config.trade_amount;
-            let execution_mode = config.execution_mode.clone();
 
             // Clone Arc references for the async task
             let trading_guard_clone = Arc::clone(&trading_guard);
@@ -497,10 +496,8 @@ impl EventDrivenScanner {
                 }
             });
 
-            // In sequential mode, only execute one per cycle
-            if execution_mode == "sequential" {
-                break;
-            }
+            // Only execute one opportunity per cycle (sequential execution)
+            break;
         }
     }
 

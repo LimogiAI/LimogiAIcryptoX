@@ -5,7 +5,6 @@
 //! - Circuit breaker (daily/total loss limits)
 //! - Profit threshold filtering
 //! - Base currency filtering
-//! - Execution mode (sequential/parallel)
 //!
 //! This moves guard logic from Python to Rust for faster execution.
 
@@ -31,8 +30,6 @@ pub struct TradingConfig {
     pub max_total_loss: f64,
     /// Base currency filter (e.g., "USD", "ALL", or comma-separated list)
     pub base_currency: String,
-    /// Execution mode: "sequential" or "parallel"
-    pub execution_mode: String,
 }
 
 impl Default for TradingConfig {
@@ -44,7 +41,6 @@ impl Default for TradingConfig {
             max_daily_loss: 30.0,
             max_total_loss: 30.0,
             base_currency: "USD".to_string(),
-            execution_mode: "sequential".to_string(),
         }
     }
 }
@@ -131,8 +127,6 @@ pub struct TradingGuard {
     // Cached config values as atomics for lock-free reads in hot path
     // min_profit_threshold stored as u64 (bits representation of f64)
     cached_min_profit_threshold_bits: AtomicU64,
-    // execution_mode: 0 = sequential, 1 = parallel
-    cached_execution_mode_parallel: AtomicBool,
 
     // Statistics
     trades_executed: AtomicU64,
@@ -149,7 +143,6 @@ impl TradingGuard {
         let default_config = TradingConfig::default();
         Self {
             cached_min_profit_threshold_bits: AtomicU64::new(default_config.min_profit_threshold.to_bits()),
-            cached_execution_mode_parallel: AtomicBool::new(default_config.execution_mode == "parallel"),
             config: RwLock::new(default_config),
             state: RwLock::new(CircuitBreakerState::default()),
             enabled: AtomicBool::new(false),
@@ -168,7 +161,6 @@ impl TradingGuard {
         self.enabled.store(config.enabled, Ordering::SeqCst);
         // Update cached atomic values for lock-free reads
         self.cached_min_profit_threshold_bits.store(config.min_profit_threshold.to_bits(), Ordering::SeqCst);
-        self.cached_execution_mode_parallel.store(config.execution_mode == "parallel", Ordering::SeqCst);
         *self.config.write() = config;
         info!("Trading config updated");
     }
@@ -177,12 +169,6 @@ impl TradingGuard {
     #[inline]
     fn get_cached_min_profit_threshold(&self) -> f64 {
         f64::from_bits(self.cached_min_profit_threshold_bits.load(Ordering::Relaxed))
-    }
-
-    /// Check if execution mode is parallel (lock-free)
-    #[inline]
-    fn is_parallel_mode(&self) -> bool {
-        self.cached_execution_mode_parallel.load(Ordering::Relaxed)
     }
 
     /// Get current configuration
@@ -237,16 +223,13 @@ impl TradingGuard {
         self.state.read().clone()
     }
 
-    /// Set executing flag (returns false if already executing in sequential mode)
+    /// Set executing flag (returns false if already executing)
     pub fn try_start_execution(&self) -> bool {
-        let config = self.config.read();
-        if config.execution_mode == "sequential" {
-            // In sequential mode, only one execution at a time
-            if self.is_executing.compare_exchange(
-                false, true, Ordering::SeqCst, Ordering::SeqCst
-            ).is_err() {
-                return false;
-            }
+        // Only one execution at a time
+        if self.is_executing.compare_exchange(
+            false, true, Ordering::SeqCst, Ordering::SeqCst
+        ).is_err() {
+            return false;
         }
         self.state.write().is_executing = true;
         true
@@ -276,8 +259,8 @@ impl TradingGuard {
             };
         }
 
-        // Check if already executing (in sequential mode) - lock-free
-        if !self.is_parallel_mode() && self.is_executing.load(Ordering::Relaxed) {
+        // Check if already executing - only one trade at a time
+        if self.is_executing.load(Ordering::Relaxed) {
             return GuardCheckResult {
                 can_trade: false,
                 reason: Some("Trade already executing".to_string()),

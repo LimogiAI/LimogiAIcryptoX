@@ -194,8 +194,8 @@ class CircuitBreaker:
             ))
             return False, f"Total loss limit reached (${state.total_loss:.2f})"
         
-        # Check if already executing (sequential mode)
-        if config.execution_mode == 'sequential' and state.is_executing:
+        # Check if already executing
+        if state.is_executing:
             return False, f"Trade already in progress: {state.current_trade_id}"
         
         return True, None
@@ -364,10 +364,8 @@ class CircuitBreaker:
             if not state:
                 return False
             
-            config = self.config_manager.get_settings()
-            
-            # For sequential mode, check if already executing
-            if config.execution_mode == 'sequential' and state.is_executing:
+            # Check if already executing
+            if state.is_executing:
                 return False
             
             state.is_executing = True

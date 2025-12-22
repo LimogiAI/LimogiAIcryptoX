@@ -26,11 +26,7 @@ class LiveTradingConfig(Base):
     # Loss limits
     max_daily_loss = Column(Float, nullable=False, default=30.0)
     max_total_loss = Column(Float, nullable=False, default=30.0)
-    
-    # Execution mode
-    execution_mode = Column(String(20), nullable=False, default='sequential')
-    max_parallel_trades = Column(Integer, nullable=False, default=1)
-    
+
     # Order execution
     max_retries_per_leg = Column(Integer, nullable=False, default=2)
     order_timeout_seconds = Column(Integer, nullable=False, default=30)

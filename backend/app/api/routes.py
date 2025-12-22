@@ -1,5 +1,7 @@
 """
 API Routes for LimogiAICryptoX v2.0 - Live Trading Platform
+
+SECURITY: State-changing endpoints require API key authentication.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,7 @@ from datetime import datetime, timedelta
 from app.core.database import get_db
 from app.main import real_kraken_fees
 from app.core.config import settings
+from app.core.auth import require_api_key
 
 # Import live trading routes
 from app.api.live_routes import router as live_router
@@ -162,14 +165,14 @@ async def get_engine_settings():
         }
 
 
-@router.put("/engine-settings")
+@router.put("/engine-settings", dependencies=[Depends(require_api_key)])
 async def update_engine_settings(
     scan_interval_ms: Optional[int] = None,
     max_pairs: Optional[int] = None,
     orderbook_depth: Optional[int] = None,
     scanner_enabled: Optional[bool] = None,
 ):
-    """Update engine settings at runtime."""
+    """Update engine settings at runtime. Requires API key."""
     engine = get_engine()
 
     if not engine:
@@ -221,9 +224,9 @@ async def update_engine_settings(
         raise HTTPException(status_code=500, detail=f"Failed to update settings: {str(e)}")
 
 
-@router.post("/engine/restart")
+@router.post("/engine/restart", dependencies=[Depends(require_api_key)])
 async def restart_engine():
-    """Hot-reload the engine with new settings."""
+    """Hot-reload the engine with new settings. Requires API key."""
     engine = get_engine()
 
     if not engine:
@@ -771,9 +774,9 @@ async def get_trade_controls():
     }
 
 
-@router.put("/trade-controls")
+@router.put("/trade-controls", dependencies=[Depends(require_api_key)])
 async def update_trade_controls(updates: dict):
-    """Update trade control settings"""
+    """Update trade control settings. Requires API key."""
     key_mapping = {
         "trade_amount": "trade_amount",
         "min_profit_threshold": "min_profit_threshold",
@@ -805,9 +808,9 @@ async def update_trade_controls(updates: dict):
     }
 
 
-@router.post("/trade-controls/toggle")
+@router.post("/trade-controls/toggle", dependencies=[Depends(require_api_key)])
 async def toggle_trading(is_active: bool):
-    """Toggle auto-trading on/off"""
+    """Toggle auto-trading on/off. Requires API key."""
     update_runtime_settings({"is_active": is_active})
     return {
         "success": True,

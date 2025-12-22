@@ -227,5 +227,4 @@ class TradeGuard:
             'remaining_total_budget': self.circuit_breaker.get_remaining_total_budget(),
             'trade_amount': config.trade_amount,
             'min_profit_threshold': config.min_profit_threshold * 100,  # As percentage
-            'execution_mode': config.execution_mode,
         }

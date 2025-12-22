@@ -33,6 +33,10 @@ services:
       - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
       - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
 
+      # API Authentication (REQUIRED for security)
+      - LIMOGI_API_KEY=${LIMOGI_API_KEY:-}
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1
@@ -53,6 +57,7 @@ services:
     environment:
       - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
       - REACT_APP_WS_URL=${REACT_APP_WS_URL:-ws://localhost:8000}
+      - REACT_APP_API_KEY=${REACT_APP_API_KEY:-}
     ports:
       - "3001:3000"
     depends_on:
