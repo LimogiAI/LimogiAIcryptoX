@@ -12,6 +12,7 @@ import { api } from './services/api';
 function App() {
   const [status, setStatus] = useState(null);
   const [opportunities, setOpportunities] = useState([]);
+  const [tradeAmount, setTradeAmount] = useState(10.0);  // Dynamic trade amount for profit display
   const [prices, setPrices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -48,6 +49,9 @@ function App() {
         limit: 50,
       });
       setOpportunities(oppsRes.opportunities || oppsRes || []);
+      if (oppsRes.trade_amount) {
+        setTradeAmount(oppsRes.trade_amount);
+      }
     } catch (err) {
       console.error('Fetch opportunities error:', err);
     }
@@ -164,6 +168,7 @@ function App() {
         {activeTab === 'opportunities' && (
           <OpportunitiesPanel
             opportunities={opportunities}
+            tradeAmount={tradeAmount}
             sortBy={sortBy}
             setSortBy={setSortBy}
             baseCurrency={baseCurrency}

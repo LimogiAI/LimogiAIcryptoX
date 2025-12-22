@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../services/api';
 
-export function OpportunitiesPanel({ 
-  opportunities, 
-  sortBy, 
-  setSortBy, 
-  baseCurrency, 
+export function OpportunitiesPanel({
+  opportunities,
+  tradeAmount = 10.0,
+  sortBy,
+  setSortBy,
+  baseCurrency,
   setBaseCurrency,
   minutesAgo,
   setMinutesAgo,
-  onRefresh 
+  onRefresh
 }) {
   const [activeSubTab, setActiveSubTab] = useState('live');
   const [historyData, setHistoryData] = useState([]);
@@ -211,7 +212,7 @@ export function OpportunitiesPanel({
                       <th>Gross %</th>
                       <th>Fees %</th>
                       <th>Net %</th>
-                      <th>Profit ($10k)</th>
+                      <th>Profit (${tradeAmount >= 1000 ? `${(tradeAmount/1000).toFixed(0)}k` : tradeAmount.toFixed(0)})</th>
                       <th>Status</th>
                     </tr>
                   </thead>

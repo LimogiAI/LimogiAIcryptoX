@@ -43,6 +43,7 @@ _runtime_settings = {
     "fee_rate": 0.0026,
     "base_currency": "ALL",
     "custom_currencies": [],
+    "trade_amount": 10.0,  # Default trade amount for profit calculations
 }
 
 
@@ -688,10 +689,13 @@ async def get_opportunities(
 ):
     """Get cached arbitrage opportunities"""
 
+    runtime = get_runtime_settings()
+    trade_amount = runtime.get("trade_amount", 10.0)
+
     opportunities = get_cached_opportunities()
 
     if not opportunities:
-        return {"count": 0, "opportunities": []}
+        return {"count": 0, "trade_amount": trade_amount, "opportunities": []}
 
     if base_currency and base_currency != "ALL":
         opportunities = [o for o in opportunities if o.path.startswith(base_currency)]
@@ -711,6 +715,7 @@ async def get_opportunities(
 
     return {
         "count": len(opportunities),
+        "trade_amount": trade_amount,  # Include trade amount so frontend knows what it's based on
         "opportunities": [
             {
                 "id": o.id,
@@ -719,7 +724,7 @@ async def get_opportunities(
                 "gross_profit_pct": o.net_profit_pct + (o.legs * fee_rate),
                 "fees_pct": o.legs * fee_rate,
                 "net_profit_pct": o.net_profit_pct,
-                "profit_amount": (o.net_profit_pct / 100) * 10000,
+                "profit_amount": (o.net_profit_pct / 100) * trade_amount,
                 "is_profitable": o.is_profitable,
                 "detected_at": datetime.utcnow().isoformat(),
             }
