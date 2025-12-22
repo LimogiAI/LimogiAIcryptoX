@@ -33,8 +33,11 @@ logger.add(
 # Global engine instance
 engine = None
 
-# Global scanner instance (for accessing cached data)
-scanner = None
+# Runtime fee values (fetched from Kraken on startup)
+real_kraken_fees = {
+    "taker": None,  # Will be set from Kraken API
+    "maker": None,
+}
 
 
 def get_engine():
@@ -43,26 +46,10 @@ def get_engine():
     return engine
 
 
-def get_cached_opportunities():
-    """Get cached opportunities from the unified scanner"""
-    global scanner
-    if scanner:
-        return scanner.get_cached_opportunities()
-    return []
-
-
-def get_best_profit_today():
-    """Get best profit today from the unified scanner"""
-    global scanner
-    if scanner:
-        return scanner.get_best_profit_today()
-    return 0.0
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global engine, scanner
+    global engine
 
     logger.info("Starting LimogiAICryptoX v2.0...")
 
@@ -73,7 +60,7 @@ async def lifespan(app: FastAPI):
     # Initialize Kraken client for live trading
     live_kraken_client = None
     try:
-        from app.core.kraken_client import KrakenClient, TradingMode
+        from app.core.kraken_client import KrakenClient
 
         # Live trading client (with order permissions)
         # Use effective keys (supports both KRAKEN_API_KEY and KRAKEN_LIVE_API_KEY)
@@ -84,7 +71,6 @@ async def lifespan(app: FastAPI):
             live_kraken_client = KrakenClient(
                 api_key=api_key,
                 private_key=api_secret,
-                mode=TradingMode.LIVE,
                 max_loss_usd=settings.kraken_max_loss_usd,
             )
             logger.info(f"Using Kraken API key: {api_key[:8]}...")
@@ -101,6 +87,28 @@ async def lifespan(app: FastAPI):
                     usd_balance = balance.get("ZUSD", 0) + balance.get("USD", 0)
                     logger.info(f"Kraken Live API connected (Balance: ${usd_balance:.2f})")
                     logger.info(f"Max loss limit: ${settings.kraken_max_loss_usd}")
+
+                    # Fetch REAL fee tier from Kraken (not hardcoded defaults)
+                    global real_kraken_fees
+                    try:
+                        fees_info = await live_kraken_client.get_trade_fees()
+                        if "error" not in fees_info:
+                            taker_fees = [f["fee"] for f in fees_info.get("fees", {}).values()]
+                            maker_fees = [f["fee"] for f in fees_info.get("fees_maker", {}).values()]
+                            if taker_fees:
+                                real_taker = sum(taker_fees) / len(taker_fees)
+                                real_maker = sum(maker_fees) / len(maker_fees) if maker_fees else real_taker - 0.10
+                                logger.info(f"Kraken fee tier: {real_taker:.2f}% taker, {real_maker:.2f}% maker (30d vol: ${fees_info.get('volume', 0):.2f})")
+                                # Store for later use by Rust engine
+                                real_kraken_fees["taker"] = real_taker / 100  # Convert to decimal
+                                real_kraken_fees["maker"] = real_maker / 100
+                            else:
+                                logger.warning("No fee data from Kraken, using defaults (0.26%/0.16%)")
+                        else:
+                            logger.warning(f"Could not fetch Kraken fees: {fees_info.get('error')}")
+                    except Exception as fee_err:
+                        logger.warning(f"Failed to fetch Kraken fee tier: {fee_err}")
+
                 except Exception as e:
                     logger.warning(f"Kraken Live API connection test failed: {e}")
             except Exception as e:
@@ -114,15 +122,18 @@ async def lifespan(app: FastAPI):
     # Initialize Rust engine
     if RUST_ENGINE_AVAILABLE:
         try:
+            # Use real fee from Kraken if available, otherwise use default
+            actual_fee_rate = real_kraken_fees["taker"] or settings.fee_rate_taker
+
             engine = TradingEngine(
                 min_profit_threshold=settings.min_profit_threshold,
-                fee_rate=settings.fee_rate_taker,
+                fee_rate=actual_fee_rate,
                 max_pairs=settings.max_pairs,
             )
 
             # Initialize (fetch pairs and prices)
             engine.initialize()
-            logger.info("Rust engine initialized")
+            logger.info(f"Rust engine initialized (fee_rate={actual_fee_rate*100:.2f}%)")
 
             # Start WebSocket streaming
             engine.start_websocket()
@@ -133,6 +144,21 @@ async def lifespan(app: FastAPI):
                 try:
                     engine.init_execution_engine(api_key, api_secret)
                     logger.info("Rust execution engine initialized with API credentials")
+
+                    # Sync real fees to Rust execution engine
+                    real_taker = real_kraken_fees["taker"] or settings.fee_rate_taker
+                    real_maker = real_kraken_fees["maker"] or settings.fee_rate_maker
+                    try:
+                        engine.set_fee_config(
+                            real_maker,  # maker fee
+                            real_taker,  # taker fee
+                            0.5,         # min_profit_for_maker
+                            0.1,         # max_spread_for_maker
+                            False,       # use_maker_for_intermediate
+                        )
+                        logger.info(f"Fee config synced to Rust: taker={real_taker*100:.2f}%, maker={real_maker*100:.2f}%")
+                    except Exception as fee_err:
+                        logger.warning(f"Could not sync fees to Rust engine: {fee_err}")
 
                     # Auto-connect to private WebSocket
                     engine.connect_execution_engine()
@@ -193,7 +219,8 @@ async def lifespan(app: FastAPI):
     if engine:
         stats = engine.get_stats()
         logger.info(f"Monitoring {stats.pairs_monitored} pairs")
-    logger.info(f"Fee rate: {settings.fee_rate_taker * 100:.2f}%")
+    actual_fee = real_kraken_fees["taker"] or settings.fee_rate_taker
+    logger.info(f"Fee rate: {actual_fee * 100:.2f}% (from {'Kraken API' if real_kraken_fees['taker'] else 'default'})")
     logger.info(f"Min profit threshold: {settings.min_profit_threshold * 100:.3f}%")
     logger.info("=" * 50)
 
@@ -282,11 +309,10 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    global engine, scanner
+    global engine
 
     if engine:
         stats = engine.get_stats()
-        scanner_status = scanner.get_status() if scanner else {}
         return {
             "status": "healthy",
             "engine": "rust_v2",
@@ -295,11 +321,7 @@ async def health_check():
             "currencies": stats.currencies_tracked,
             "uptime_seconds": stats.uptime_seconds,
             "avg_staleness_ms": f"{stats.avg_orderbook_staleness_ms:.1f}",
-            "scanner": {
-                "is_running": scanner_status.get('is_running', False),
-                "scans_completed": scanner_status.get('scans_completed', 0),
-                "cached_opportunities": scanner_status.get('cached_opportunities_count', 0),
-            }
+            "opportunities_found": stats.opportunities_found,
         }
     else:
         return {

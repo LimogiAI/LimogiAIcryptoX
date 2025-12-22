@@ -383,6 +383,18 @@ export const api = {
     return response.data;
   },
 
+  // Get real Kraken account fees (from your trading volume tier)
+  async getKrakenFees() {
+    const response = await client.get('/api/live/kraken-fees');
+    return response.data;
+  },
+
+  // Sync Kraken fees to engine (fetch real fees and update engine)
+  async syncKrakenFees() {
+    const response = await client.post('/api/live/sync-kraken-fees');
+    return response.data;
+  },
+
   // Analyze parallel execution opportunity
   async analyzeParallelExecution(path, amount, balances = null) {
     const response = await client.post('/api/live/analyze-parallel', {

@@ -55,6 +55,9 @@ class UICacheManager:
         self._last_fetch_at: Optional[datetime] = None
         self._fetches_completed = 0
         self._last_health_snapshot_at: Optional[datetime] = None
+        self._last_fee_refresh_at: Optional[datetime] = None
+        self._last_known_taker_fee: Optional[float] = None
+        self._last_known_maker_fee: Optional[float] = None
 
     @property
     def is_running(self) -> bool:
@@ -88,6 +91,9 @@ class UICacheManager:
 
         # Wait for initial data to load
         await asyncio.sleep(5)
+
+        # Initialize fee tracking with current values from Kraken
+        await self._refresh_kraken_fees()
 
         while self._running:
             try:
@@ -180,6 +186,10 @@ class UICacheManager:
         # === HEALTH SNAPSHOT (every 300 cycles = ~5 minutes) ===
         if self._fetches_completed % 300 == 0:
             await self._save_health_snapshot()
+
+        # === FEE REFRESH (every 3600 cycles = ~1 hour) ===
+        if self._fetches_completed % 3600 == 0:
+            await self._refresh_kraken_fees()
 
         # Log results periodically (every 60 cycles = ~1 minute)
         if self._fetches_completed % 60 == 1:
@@ -324,6 +334,91 @@ class UICacheManager:
         finally:
             db.close()
 
+    async def _refresh_kraken_fees(self):
+        """
+        Refresh fee tier from Kraken API (called hourly).
+
+        Detects if fees changed and updates:
+        1. Global real_kraken_fees dict
+        2. Rust engine fee config
+        3. Logs notification if fees changed
+        """
+        from app.main import real_kraken_fees
+        from app.core.config import settings
+
+        try:
+            if not self.kraken_client:
+                return
+
+            fees_info = await self.kraken_client.get_trade_fees()
+
+            if "error" in fees_info:
+                logger.warning(f"Fee refresh failed: {fees_info.get('error')}")
+                return
+
+            taker_fees = [f["fee"] for f in fees_info.get("fees", {}).values()]
+            maker_fees = [f["fee"] for f in fees_info.get("fees_maker", {}).values()]
+
+            if not taker_fees:
+                return
+
+            new_taker = sum(taker_fees) / len(taker_fees)
+            new_maker = sum(maker_fees) / len(maker_fees) if maker_fees else new_taker - 0.10
+
+            # Convert to decimal (0.40 -> 0.004)
+            new_taker_decimal = new_taker / 100
+            new_maker_decimal = new_maker / 100
+
+            # Check if fees changed
+            old_taker = self._last_known_taker_fee
+            old_maker = self._last_known_maker_fee
+            fee_changed = False
+
+            if old_taker is not None and abs(new_taker - old_taker) > 0.001:
+                fee_changed = True
+                if new_taker < old_taker:
+                    logger.info(f"🎉 FEE DECREASE! Taker fee dropped: {old_taker:.2f}% → {new_taker:.2f}%")
+                else:
+                    logger.warning(f"⚠️ FEE INCREASE! Taker fee rose: {old_taker:.2f}% → {new_taker:.2f}%")
+
+            if old_maker is not None and abs(new_maker - old_maker) > 0.001:
+                fee_changed = True
+                if new_maker < old_maker:
+                    logger.info(f"🎉 FEE DECREASE! Maker fee dropped: {old_maker:.2f}% → {new_maker:.2f}%")
+                else:
+                    logger.warning(f"⚠️ FEE INCREASE! Maker fee rose: {old_maker:.2f}% → {new_maker:.2f}%")
+
+            # Update stored values
+            self._last_known_taker_fee = new_taker
+            self._last_known_maker_fee = new_maker
+            self._last_fee_refresh_at = datetime.utcnow()
+
+            # Update global fee dict
+            real_kraken_fees["taker"] = new_taker_decimal
+            real_kraken_fees["maker"] = new_maker_decimal
+
+            # Update Rust engine if fees changed
+            if fee_changed or old_taker is None:
+                try:
+                    self.engine.set_fee_config(
+                        new_maker_decimal,
+                        new_taker_decimal,
+                        0.5,   # min_profit_for_maker
+                        0.1,   # max_spread_for_maker
+                        False, # use_maker_for_intermediate
+                    )
+                    if fee_changed:
+                        logger.info(f"✅ Rust engine updated with new fees: taker={new_taker:.2f}%, maker={new_maker:.2f}%")
+                except Exception as e:
+                    logger.error(f"Failed to update Rust engine fees: {e}")
+
+            # Log periodic refresh (not just on change)
+            volume = fees_info.get("volume", 0)
+            logger.info(f"💰 Fee refresh: taker={new_taker:.2f}%, maker={new_maker:.2f}% (30d vol: ${volume:.2f})")
+
+        except Exception as e:
+            logger.error(f"Fee refresh error: {e}")
+
     def _update_status(
         self,
         is_running: bool = None,
@@ -374,6 +469,9 @@ class UICacheManager:
             'fetches_completed': self._fetches_completed,
             'last_fetch_at': self._last_fetch_at.isoformat() if self._last_fetch_at else None,
             'last_health_snapshot_at': self._last_health_snapshot_at.isoformat() if self._last_health_snapshot_at else None,
+            'last_fee_refresh_at': self._last_fee_refresh_at.isoformat() if self._last_fee_refresh_at else None,
+            'current_taker_fee_pct': self._last_known_taker_fee,
+            'current_maker_fee_pct': self._last_known_maker_fee,
             'cached_opportunities_count': len(self.cached_opportunities),
             'best_profit_today': self.best_profit_today,
             'auto_executions': auto_execs,
@@ -411,15 +509,3 @@ def stop_ui_cache():
         _ui_cache.stop()
 
 
-# Backwards compatibility aliases (will be removed in future)
-# These old names were confusing - this is NOT a scanner
-UnifiedScanner = UICacheManager
-LiveTradingScanner = UICacheManager
-get_scanner = get_ui_cache
-get_live_scanner = get_ui_cache
-initialize_scanner = initialize_ui_cache
-start_scanner = start_ui_cache
-stop_scanner = stop_ui_cache
-initialize_live_scanner = lambda engine, kraken_client: initialize_ui_cache(engine, kraken_client, None)
-start_live_scanner = start_ui_cache
-stop_live_scanner = stop_ui_cache

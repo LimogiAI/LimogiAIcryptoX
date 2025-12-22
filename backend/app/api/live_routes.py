@@ -794,6 +794,140 @@ async def get_fee_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/kraken-fees")
+async def get_kraken_account_fees():
+    """
+    Fetch REAL fee tier from Kraken based on your 30-day trading volume.
+
+    This calls Kraken's TradeVolume API to get your actual maker/taker fees,
+    which depend on your trading volume tier.
+
+    Fee tiers (as of 2024):
+    - $0-$50K: 0.26% taker, 0.16% maker
+    - $50K-$100K: 0.24% taker, 0.14% maker
+    - $100K-$250K: 0.22% taker, 0.12% maker
+    - And continues down with higher volume
+    """
+    try:
+        manager = get_manager()
+        kraken_client = manager.kraken_client
+
+        if not kraken_client:
+            raise HTTPException(status_code=503, detail="Kraken client not available")
+
+        # Fetch real fees from Kraken
+        fees_info = await kraken_client.get_trade_fees()
+
+        # Check for errors
+        if "error" in fees_info:
+            return {
+                "success": False,
+                "error": fees_info["error"],
+                "using_defaults": True,
+                "default_taker_fee": 0.26,
+                "default_maker_fee": 0.16,
+            }
+
+        # Calculate average fee from returned pairs
+        taker_fees = [f["fee"] for f in fees_info.get("fees", {}).values()]
+        maker_fees = [f["fee"] for f in fees_info.get("fees_maker", {}).values()]
+
+        avg_taker = sum(taker_fees) / len(taker_fees) if taker_fees else 0.26
+        avg_maker = sum(maker_fees) / len(maker_fees) if maker_fees else 0.16
+
+        return {
+            "success": True,
+            "30_day_volume_usd": fees_info.get("volume", 0),
+            "currency": fees_info.get("currency", "ZUSD"),
+            "taker_fee_pct": avg_taker,
+            "maker_fee_pct": avg_maker,
+            "fee_savings_pct": avg_taker - avg_maker,
+            "pairs_queried": len(taker_fees),
+            "raw_fees": fees_info.get("fees", {}),
+            "raw_fees_maker": fees_info.get("fees_maker", {}),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch Kraken fees: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sync-kraken-fees")
+async def sync_kraken_fees_to_engine():
+    """
+    Fetch real fees from Kraken and update the Rust engine to use them.
+
+    This ensures profit calculations use your actual fee tier instead of defaults.
+    Call this after connecting to update fees based on your trading volume.
+    """
+    try:
+        manager = get_manager()
+        kraken_client = manager.kraken_client
+        engine = get_engine()
+
+        if not kraken_client:
+            raise HTTPException(status_code=503, detail="Kraken client not available")
+
+        # Fetch real fees from Kraken
+        fees_info = await kraken_client.get_trade_fees()
+
+        if "error" in fees_info:
+            return {
+                "success": False,
+                "error": fees_info["error"],
+                "message": "Using default fees - could not fetch from Kraken",
+            }
+
+        # Calculate average fee from returned pairs
+        taker_fees = [f["fee"] for f in fees_info.get("fees", {}).values()]
+        maker_fees = [f["fee"] for f in fees_info.get("fees_maker", {}).values()]
+
+        if not taker_fees:
+            return {
+                "success": False,
+                "error": "No fee data returned from Kraken",
+                "message": "Using default fees",
+            }
+
+        avg_taker = sum(taker_fees) / len(taker_fees)
+        avg_maker = sum(maker_fees) / len(maker_fees) if maker_fees else avg_taker - 0.10
+
+        # Convert from percentage (0.26) to decimal (0.0026)
+        taker_decimal = avg_taker / 100
+        maker_decimal = avg_maker / 100
+
+        # Get current config to preserve other settings
+        _, _, min_profit, max_spread, use_maker = engine.get_fee_config()
+
+        # Update Rust engine with real fees
+        engine.set_fee_config(
+            maker_decimal,
+            taker_decimal,
+            min_profit,
+            max_spread,
+            use_maker,
+        )
+
+        logger.info(f"Synced Kraken fees: taker={avg_taker:.2f}%, maker={avg_maker:.2f}%")
+
+        return {
+            "success": True,
+            "message": "Fees synced from Kraken to engine",
+            "30_day_volume_usd": fees_info.get("volume", 0),
+            "taker_fee_pct": avg_taker,
+            "maker_fee_pct": avg_maker,
+            "taker_fee_decimal": taker_decimal,
+            "maker_fee_decimal": maker_decimal,
+            "pairs_sampled": len(taker_fees),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to sync Kraken fees: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.put("/fee-config")
 async def update_fee_config(request: FeeConfigRequest):
     """

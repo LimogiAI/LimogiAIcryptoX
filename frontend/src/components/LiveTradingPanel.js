@@ -51,6 +51,7 @@ export function LiveTradingPanel() {
   const [rustEngineStatus, setRustEngineStatus] = useState(null);
   const [feeConfig, setFeeConfig] = useState(null);
   const [feeStats, setFeeStats] = useState(null);
+  const [krakenFees, setKrakenFees] = useState(null);  // Real fees from Kraken
   const [showFeeSettings, setShowFeeSettings] = useState(false);
 
   const AVAILABLE_CURRENCIES = ['USD', 'USDT', 'EUR', 'BTC', 'ETH'];
@@ -82,16 +83,18 @@ export function LiveTradingPanel() {
       if (configRes.config?.custom_currencies) setCustomCurrencies(configRes.config.custom_currencies);
       if (configRes.config?.base_currency === 'CUSTOM') setShowCustomCurrencies(true);
 
-      // Fetch Rust execution engine status
+      // Fetch Rust execution engine status and Kraken fees
       try {
-        const [rustStatus, feeConfigRes, feeStatsRes] = await Promise.all([
+        const [rustStatus, feeConfigRes, feeStatsRes, krakenFeesRes] = await Promise.all([
           api.getRustExecutionEngineStatus().catch(() => null),
           api.getFeeConfig().catch(() => null),
           api.getFeeStats().catch(() => null),
+          api.getKrakenFees().catch(() => null),
         ]);
         setRustEngineStatus(rustStatus);
         setFeeConfig(feeConfigRes);
         setFeeStats(feeStatsRes);
+        setKrakenFees(krakenFeesRes);
       } catch (rustErr) {
         // Rust engine may not be initialized - that's OK
       }
@@ -378,9 +381,11 @@ export function LiveTradingPanel() {
 
   const getThresholdWarning = () => {
     const threshold = currentThreshold * 100;
-    if (threshold < 0.1) {
-      return { type: 'danger', message: '🔴 Very risky: Trading fees are typically 0.16-0.26%' };
-    } else if (threshold < 0.2) {
+    const takerFee = krakenFees?.success ? krakenFees.taker_fee_pct : 0.26;
+    const makerFee = krakenFees?.success ? krakenFees.maker_fee_pct : 0.16;
+    if (threshold < takerFee) {
+      return { type: 'danger', message: `🔴 Very risky: Your trading fees are ${makerFee.toFixed(2)}-${takerFee.toFixed(2)}%` };
+    } else if (threshold < takerFee * 1.5) {
       return { type: 'warning', message: '⚠️ Warning: Fees may exceed profits at this threshold' };
     }
     return null;
@@ -603,6 +608,13 @@ export function LiveTradingPanel() {
           <div className={`status-card ${circuitBroken ? 'danger' : 'ok'}`}><span className="status-label">Circuit Breaker</span><span className="status-value">{circuitBroken ? '🛑 TRIGGERED' : '✅ OK'}</span></div>
           <div className="status-card"><span className="status-label">Execution</span><span className="status-value">⚡ Rust WebSocket</span></div>
           <div className="status-card"><span className="status-label">Trade Amount</span><span className="status-value">${config?.trade_amount || 10}</span></div>
+          <div className="status-card">
+            <span className="status-label">Fee Tier {krakenFees?.success ? '(Live)' : ''}</span>
+            <span className="status-value">
+              {krakenFees?.success ? `${krakenFees.taker_fee_pct.toFixed(2)}%` : '0.26%'} / leg
+            </span>
+            {krakenFees?.success && <span className="status-detail">30d vol: ${krakenFees['30_day_volume_usd']?.toFixed(0)}</span>}
+          </div>
         </div>
       </div>
 
@@ -718,24 +730,40 @@ export function LiveTradingPanel() {
                 </div>
               )}
 
-              {/* Kraken Fee Rates (read-only - set by Kraken based on 30-day volume) */}
+              {/* Kraken Fee Rates (from your account's actual fee tier) */}
               <div className="fee-rates-display">
                 <div className="fee-rate-item">
                   <span className="fee-rate-label">Maker Fee</span>
-                  <span className="fee-rate-value">{(getFeeConfigValue('maker_fee', 0.0016) * 100).toFixed(2)}%</span>
+                  <span className="fee-rate-value">
+                    {krakenFees?.success ? krakenFees.maker_fee_pct.toFixed(2) : (getFeeConfigValue('maker_fee', 0.0016) * 100).toFixed(2)}%
+                  </span>
                 </div>
                 <div className="fee-rate-item">
                   <span className="fee-rate-label">Taker Fee</span>
-                  <span className="fee-rate-value">{(getFeeConfigValue('taker_fee', 0.0026) * 100).toFixed(2)}%</span>
+                  <span className="fee-rate-value">
+                    {krakenFees?.success ? krakenFees.taker_fee_pct.toFixed(2) : (getFeeConfigValue('taker_fee', 0.0026) * 100).toFixed(2)}%
+                  </span>
                 </div>
                 <div className="fee-rate-item highlight">
                   <span className="fee-rate-label">Potential Savings</span>
                   <span className="fee-rate-value positive">
-                    {((getFeeConfigValue('taker_fee', 0.0026) - getFeeConfigValue('maker_fee', 0.0016)) * 100).toFixed(2)}%
+                    {krakenFees?.success ? krakenFees.fee_savings_pct.toFixed(2) : ((getFeeConfigValue('taker_fee', 0.0026) - getFeeConfigValue('maker_fee', 0.0016)) * 100).toFixed(2)}%
                   </span>
                 </div>
               </div>
-              <p className="fee-note">Fee rates are set by Kraken based on your 30-day trading volume.</p>
+              {krakenFees?.success && (
+                <div className="kraken-volume-info">
+                  <span className="volume-label">30-Day Volume:</span>
+                  <span className="volume-value">${krakenFees['30_day_volume_usd']?.toLocaleString() || '0'}</span>
+                </div>
+              )}
+              <p className="fee-note">
+                {krakenFees?.success
+                  ? 'Fees fetched from your Kraken account (based on 30-day volume tier).'
+                  : krakenFees?.error
+                    ? `Using defaults - ${krakenFees.error}`
+                    : 'Fee rates are set by Kraken based on your 30-day trading volume.'}
+              </p>
             </div>
           )}
         </div>
@@ -832,7 +860,7 @@ export function LiveTradingPanel() {
                 
                 <div className="risk-section">
                   <h5>3. Trading Fees</h5>
-                  <p>Each trade incurs ~0.26% taker fee per leg (~0.78% total for 3-leg arbitrage). Fees are deducted from your balance and reduce overall profitability.</p>
+                  <p>Each trade incurs ~{krakenFees?.success ? krakenFees.taker_fee_pct.toFixed(2) : '0.26'}% taker fee per leg (~{krakenFees?.success ? (krakenFees.taker_fee_pct * 3).toFixed(2) : '0.78'}% total for 3-leg arbitrage). Fees are deducted from your balance and reduce overall profitability.</p>
                 </div>
                 
                 <div className="risk-section">
@@ -1363,12 +1391,13 @@ export function LiveTradingPanel() {
         .disable-btn { background: #3a3a5a; color: white; border: 1px solid #555; padding: 14px 28px; border-radius: 10px; font-weight: 600; cursor: pointer; }
         .emergency-btn { background: linear-gradient(135deg, #ff0000, #cc0000); color: white; border: none; padding: 14px 28px; border-radius: 10px; font-weight: 700; cursor: pointer; animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.4); } 50% { box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); } }
-        .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+        .status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
         .status-card { background: linear-gradient(135deg, #252542, #2a2a50); border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #3a3a5a; }
         .status-card.danger { border: 2px solid #ff0000; background: linear-gradient(135deg, #3a1a1a, #2a1a1a); }
         .status-card.ok { border: 2px solid #00d4aa; }
         .status-label { display: block; color: #a0a0b0; font-size: 0.85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
         .status-value { display: block; font-size: 1.2rem; font-weight: 700; color: #fff; }
+        .status-detail { display: block; font-size: 0.75rem; color: #888; margin-top: 4px; }
         .pnl-section, .config-section, .trades-section { background: linear-gradient(135deg, #1a1a2e, #252545); border: 1px solid #3a3a5a; border-radius: 16px; padding: 25px; margin-bottom: 20px; }
         .pnl-section h3, .config-section h3, .trades-section h3 { color: #00d4aa; margin-bottom: 20px; font-size: 1.2rem; }
         .pnl-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }

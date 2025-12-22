@@ -37,7 +37,7 @@ sync_engine = create_engine(
     echo=settings.debug,
 )
 
-# Sync session factory (for shadow executor and other sync operations)
+# Sync session factory (for database operations that require synchronous access)
 SessionLocal = sessionmaker(
     bind=sync_engine,
     autocommit=False,

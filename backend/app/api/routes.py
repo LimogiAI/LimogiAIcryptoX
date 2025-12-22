@@ -8,6 +8,8 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 
 from app.core.database import get_db
+from app.main import real_kraken_fees
+from app.core.config import settings
 
 # Import live trading routes
 from app.api.live_routes import router as live_router
@@ -18,6 +20,11 @@ router = APIRouter()
 router.include_router(live_router)
 
 
+def get_current_fee_rate() -> float:
+    """Get current fee rate from Kraken (or fallback to default)"""
+    return real_kraken_fees.get("taker") or settings.fee_rate_taker
+
+
 def get_engine():
     """Get the global engine instance"""
     from app.main import get_engine as _get_engine
@@ -25,22 +32,28 @@ def get_engine():
 
 
 def get_cached_opportunities():
-    """Get cached opportunities from main"""
-    from app.main import get_cached_opportunities as _get_cached
-    return _get_cached()
+    """Get cached opportunities from UI cache manager"""
+    from app.core.live_trading.ui_cache import get_ui_cache
+    ui_cache = get_ui_cache()
+    if ui_cache:
+        return ui_cache.get_cached_opportunities()
+    return []
 
 
 def get_best_profit():
-    """Get best profit today from main"""
-    from app.main import get_best_profit_today as _get_best
-    return _get_best()
+    """Get best profit today from UI cache manager"""
+    from app.core.live_trading.ui_cache import get_ui_cache
+    ui_cache = get_ui_cache()
+    if ui_cache:
+        return ui_cache.get_best_profit_today()
+    return 0.0
 
 
 # Runtime settings (synced with Rust engine)
 _runtime_settings = {
     "is_active": True,
     "min_profit_threshold": 0.0005,
-    "fee_rate": 0.0026,
+    "fee_rate": None,  # Will be fetched from Kraken at runtime
     "base_currency": "ALL",
     "custom_currencies": [],
     "trade_amount": 10.0,  # Default trade amount for profit calculations
@@ -711,18 +724,21 @@ async def get_opportunities(
 
     opportunities = opportunities[:limit]
 
-    fee_rate = 0.26
+    # Use real fee rate from Kraken (converted to percentage)
+    fee_rate_decimal = get_current_fee_rate()
+    fee_rate_pct = fee_rate_decimal * 100  # Convert 0.004 to 0.4%
 
     return {
         "count": len(opportunities),
         "trade_amount": trade_amount,  # Include trade amount so frontend knows what it's based on
+        "fee_rate_pct": fee_rate_pct,  # Include fee rate used
         "opportunities": [
             {
                 "id": o.id,
                 "path": o.path,
                 "legs": o.legs,
-                "gross_profit_pct": o.net_profit_pct + (o.legs * fee_rate),
-                "fees_pct": o.legs * fee_rate,
+                "gross_profit_pct": o.net_profit_pct + (o.legs * fee_rate_pct),
+                "fees_pct": o.legs * fee_rate_pct,
                 "net_profit_pct": o.net_profit_pct,
                 "profit_amount": (o.net_profit_pct / 100) * trade_amount,
                 "is_profitable": o.is_profitable,

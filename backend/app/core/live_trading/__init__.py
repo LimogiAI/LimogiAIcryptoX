@@ -21,23 +21,11 @@ from .guard import TradeGuard
 from .circuit_breaker import CircuitBreaker
 from .config import ConfigManager
 from .ui_cache import (
-    # New proper names
     UICacheManager,
     get_ui_cache,
     initialize_ui_cache,
     start_ui_cache,
     stop_ui_cache,
-    # Backwards compatibility aliases (confusing old names)
-    UnifiedScanner,
-    get_scanner,
-    initialize_scanner,
-    start_scanner,
-    stop_scanner,
-    LiveTradingScanner,
-    get_live_scanner,
-    initialize_live_scanner,
-    start_live_scanner,
-    stop_live_scanner,
 )
 
 __all__ = [
@@ -48,21 +36,9 @@ __all__ = [
     'TradeGuard',
     'CircuitBreaker',
     'ConfigManager',
-    # New proper names for UI cache
     'UICacheManager',
     'get_ui_cache',
     'initialize_ui_cache',
     'start_ui_cache',
     'stop_ui_cache',
-    # Backwards compatibility (old confusing names)
-    'UnifiedScanner',
-    'get_scanner',
-    'initialize_scanner',
-    'start_scanner',
-    'stop_scanner',
-    'LiveTradingScanner',
-    'get_live_scanner',
-    'initialize_live_scanner',
-    'start_live_scanner',
-    'stop_live_scanner',
 ]
