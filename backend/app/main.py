@@ -147,13 +147,14 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning(f"Failed to auto-initialize Rust execution engine: {e}")
 
-            # Initialize and start the UNIFIED scanner (single scanner for everything)
+            # Initialize and start the UI Cache Manager (fetches from Rust for UI display)
+            # NOTE: All scanning happens in Rust - this just fetches cached data for UI
             if live_kraken_client:
                 try:
-                    from app.core.live_trading.scanner import initialize_scanner, start_scanner
+                    from app.core.live_trading.ui_cache import initialize_ui_cache, start_ui_cache
                     from app.core.live_trading import get_live_trading_manager
 
-                    scanner = initialize_scanner(engine, live_kraken_client, SessionLocal)
+                    ui_cache = initialize_ui_cache(engine, live_kraken_client, SessionLocal)
 
                     # Sync trading config from Python to Rust
                     # IMPORTANT: Always start with trading DISABLED for safety
@@ -175,10 +176,10 @@ async def lifespan(app: FastAPI):
                             manager.disable("Server restart - requires re-enable")
                         logger.info("Trading config synced to Rust (DISABLED on startup for safety)")
 
-                    start_scanner()
-                    logger.info("Unified Scanner started (opportunities + health + Rust execution)")
+                    start_ui_cache()
+                    logger.info("UI Cache Manager started (fetches from Rust engine for UI)")
                 except Exception as e:
-                    logger.error(f"Failed to start Unified Scanner: {e}")
+                    logger.error(f"Failed to start UI Cache Manager: {e}")
 
         except Exception as e:
             logger.error(f"Failed to initialize Rust engine: {e}")
@@ -201,13 +202,13 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down LimogiAICryptoX v2.0...")
 
-    # Stop scanner
-    if scanner:
+    # Stop UI cache manager
+    if ui_cache:
         try:
-            from app.core.live_trading.scanner import stop_scanner
-            stop_scanner()
+            from app.core.live_trading.ui_cache import stop_ui_cache
+            stop_ui_cache()
         except Exception as e:
-            logger.error(f"Error stopping scanner: {e}")
+            logger.error(f"Error stopping UI cache manager: {e}")
 
     if engine:
         try:

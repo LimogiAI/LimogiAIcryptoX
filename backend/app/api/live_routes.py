@@ -529,38 +529,38 @@ async def get_scanner_status():
 
 @router.post("/scanner/start")
 async def start_scanner():
-    """Start the live trading scanner"""
-    from app.core.live_trading import get_live_scanner
-    
-    scanner = get_live_scanner()
-    if not scanner:
-        raise HTTPException(status_code=503, detail="Live scanner not initialized")
-    
-    scanner.start()
-    
+    """Start the UI cache manager (fetches from Rust engine for UI)"""
+    from app.core.live_trading import get_ui_cache
+
+    ui_cache = get_ui_cache()
+    if not ui_cache:
+        raise HTTPException(status_code=503, detail="UI cache manager not initialized")
+
+    ui_cache.start()
+
     manager = get_manager()
     return {
         "success": True,
-        "message": "Scanner started",
+        "message": "UI cache manager started",
         "status": manager.get_scanner_status(),
     }
 
 
 @router.post("/scanner/stop")
 async def stop_scanner():
-    """Stop the live trading scanner"""
-    from app.core.live_trading import get_live_scanner
+    """Stop the UI cache manager"""
+    from app.core.live_trading import get_ui_cache
 
-    scanner = get_live_scanner()
-    if not scanner:
-        raise HTTPException(status_code=503, detail="Live scanner not initialized")
+    ui_cache = get_ui_cache()
+    if not ui_cache:
+        raise HTTPException(status_code=503, detail="UI cache manager not initialized")
 
-    scanner.stop()
+    ui_cache.stop()
 
     manager = get_manager()
     return {
         "success": True,
-        "message": "Scanner stopped",
+        "message": "UI cache manager stopped",
         "status": manager.get_scanner_status(),
     }
 

@@ -1,22 +1,19 @@
 """
-Unified Scanner for LimogiAICryptoX
+UI Cache Manager for LimogiAICryptoX
 
-Single scanner that handles:
-- Fetching cached opportunities from Rust event-driven scanner
+This is NOT a scanner - all scanning happens in the Rust engine.
+
+This module handles:
+- Fetching cached opportunities from Rust for UI display
 - Order book health tracking
-- Opportunity caching for UI
-- Opportunity history saving
+- Opportunity history saving to database
+- Health snapshots for monitoring
 
 NOTE: All scanning AND execution happens in Rust (auto-execution).
 Python only handles:
-- Database logging (receives trade results via callback)
 - UI caching (fetches opportunities from Rust cache)
+- Database logging for history/analytics
 - Health snapshots
-
-When user clicks "Start Trading":
-1. Python enables trading in Rust
-2. Rust auto-executes profitable opportunities immediately on detection
-3. Rust sends trade results back to Python via callback for DB logging
 """
 import asyncio
 from typing import Optional, List, Dict, Any
@@ -26,20 +23,19 @@ from loguru import logger
 from .manager import get_live_trading_manager
 
 
-class UnifiedScanner:
+class UICacheManager:
     """
-    Single scanner for all scanning operations.
+    UI Cache Manager - fetches data from Rust engine for UI display.
 
-    Features:
-    - Fetches cached opportunities from Rust for UI display
-    - Records order book health snapshots
-    - Saves opportunity history to database
+    This is NOT a scanner. The actual scanning happens in Rust:
+    - rust_engine/src/event_system.rs - Event-driven scanning
+    - rust_engine/src/scanner.rs - DFS path finding
+    - rust_engine/src/graph_manager.rs - Persistent graph
 
-    NOTE: Execution is handled entirely by Rust auto-execution.
-    Python does NOT poll for execution - it only:
-    1. Caches opportunities for UI
-    2. Saves health snapshots
-    3. Saves opportunity history
+    This Python class only:
+    1. Fetches cached opportunities from Rust for UI
+    2. Saves health snapshots to database
+    3. Saves opportunity history for analytics
     """
 
     def __init__(self, engine, kraken_client, db_session_factory):
@@ -48,17 +44,16 @@ class UnifiedScanner:
         self.db_session_factory = db_session_factory
         self._running = False
         self._task: Optional[asyncio.Task] = None
-        # Rust engine does event-driven scanning AND auto-execution
-        # Python just fetches cached results for UI display
-        self._check_interval = 1.0  # Check for UI cache updates every 1s (not critical)
+        # Just fetches from Rust cache - not doing any scanning
+        self._check_interval = 1.0  # Check for UI cache updates every 1s
 
         # Cached data for UI
         self.cached_opportunities: List[Any] = []
         self.best_profit_today: float = 0.0
 
         # Stats
-        self._last_scan_at: Optional[datetime] = None
-        self._scans_completed = 0
+        self._last_fetch_at: Optional[datetime] = None
+        self._fetches_completed = 0
         self._last_health_snapshot_at: Optional[datetime] = None
 
     @property
@@ -66,54 +61,54 @@ class UnifiedScanner:
         return self._running
 
     def start(self):
-        """Start the scanner background task"""
+        """Start the UI cache background task"""
         if self._running:
-            logger.warning("Scanner already running")
+            logger.warning("UI Cache Manager already running")
             return
 
         self._running = True
-        self._task = asyncio.create_task(self._scan_loop())
-        logger.info("🔍 Unified Scanner started")
+        self._task = asyncio.create_task(self._fetch_loop())
+        logger.info("📊 UI Cache Manager started (fetching from Rust engine)")
 
-        self._update_scanner_status(is_running=True)
+        self._update_status(is_running=True)
 
     def stop(self):
-        """Stop the scanner"""
+        """Stop the UI cache manager"""
         self._running = False
         if self._task:
             self._task.cancel()
             self._task = None
-        logger.info("🔍 Unified Scanner stopped")
+        logger.info("📊 UI Cache Manager stopped")
 
-        self._update_scanner_status(is_running=False)
+        self._update_status(is_running=False)
 
-    async def _scan_loop(self):
-        """Main loop - fetches cached opportunities from Rust event-driven scanner"""
-        logger.info(f"Scanner loop starting: {self._check_interval}s interval (Rust does event-driven scanning)")
+    async def _fetch_loop(self):
+        """Main loop - fetches cached opportunities from Rust engine"""
+        logger.info(f"UI cache fetch loop starting: {self._check_interval}s interval")
 
         # Wait for initial data to load
         await asyncio.sleep(5)
 
         while self._running:
             try:
-                await self._process_opportunities()
+                await self._fetch_and_cache()
             except asyncio.CancelledError:
-                logger.info("Scanner cancelled")
+                logger.info("UI Cache Manager cancelled")
                 break
             except Exception as e:
-                logger.error(f"Scanner error: {e}")
-                self._update_scanner_status(last_error=str(e))
+                logger.error(f"UI Cache Manager error: {e}")
+                self._update_status(last_error=str(e))
 
             await asyncio.sleep(self._check_interval)
 
-    async def _process_opportunities(self):
+    async def _fetch_and_cache(self):
         """
-        Process cached opportunities from Rust event-driven scanner.
+        Fetch cached opportunities from Rust engine.
 
-        NOTE: This does NOT execute trades - Rust handles auto-execution.
+        NOTE: This does NOT scan or execute - Rust handles all of that.
         This only:
-        1. Caches opportunities for UI display
-        2. Updates scanner status
+        1. Fetches opportunities from Rust cache for UI display
+        2. Updates status for monitoring
         3. Saves opportunity history periodically
         4. Saves health snapshots periodically
         """
@@ -126,26 +121,25 @@ class UnifiedScanner:
         # Get live trading config for settings
         config = manager.get_config()
 
-        # Check if scanner is enabled in engine
+        # Check if Rust engine is running
         if not self.engine.is_scanner_enabled():
             return
 
-        # Get cached opportunities from Rust (no new scan triggered)
-        # Rust scanner updates cache on every WebSocket order book update
+        # Get cached opportunities from Rust (no scan triggered - just reading cache)
         try:
             opportunities, cache_age_ms = self.engine.get_cached_opportunities_with_age()
         except Exception as e:
-            logger.error(f"Error getting cached opportunities: {e}")
-            self._update_scanner_status(last_error=str(e))
+            logger.error(f"Error getting cached opportunities from Rust: {e}")
+            self._update_status(last_error=str(e))
             return
 
-        # Skip if cache is too old (> 5 seconds means something is wrong)
+        # Skip if cache is too old (> 5 seconds means something is wrong with Rust engine)
         if cache_age_ms > 5000:
             return
 
         # Get engine stats
         stats = self.engine.get_stats()
-        pairs_scanned = stats.pairs_monitored
+        pairs_monitored = stats.pairs_monitored
         total_paths = len(opportunities) if opportunities else 0
 
         # Filter by profit threshold
@@ -153,23 +147,21 @@ class UnifiedScanner:
         profitable = [o for o in opportunities if o.net_profit_pct >= min_threshold_pct]
         profitable_count = len(profitable)
 
-        # Calculate scan duration
-        scan_duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+        # Calculate fetch duration
+        fetch_duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-        # Update scanner status in database
-        # paths_found = total cyclic paths discovered by DFS
-        # opportunities_found = paths above profit threshold (potentially tradeable)
-        self._update_scanner_status(
+        # Update status in database
+        self._update_status(
             is_running=self._running,
-            pairs_scanned=pairs_scanned,
+            pairs_scanned=pairs_monitored,
             paths_found=total_paths,
-            opportunities_found=profitable_count,  # Only count profitable ones
+            opportunities_found=profitable_count,
             profitable_count=profitable_count,
-            scan_duration_ms=scan_duration_ms,
+            scan_duration_ms=fetch_duration_ms,
         )
 
-        self._last_scan_at = datetime.utcnow()
-        self._scans_completed += 1
+        self._last_fetch_at = datetime.utcnow()
+        self._fetches_completed += 1
 
         # === CACHE OPPORTUNITIES FOR UI (every cycle) ===
         if opportunities:
@@ -181,16 +173,16 @@ class UnifiedScanner:
             if max_profit > self.best_profit_today:
                 self.best_profit_today = max_profit
 
-        # === SAVE OPPORTUNITY HISTORY (every 30 cycles = ~30 seconds at 1s interval) ===
-        if self._scans_completed % 30 == 0 and opportunities:
+        # === SAVE OPPORTUNITY HISTORY (every 30 cycles = ~30 seconds) ===
+        if self._fetches_completed % 30 == 0 and opportunities:
             await self._save_opportunities_to_history(opportunities[:50])
 
-        # === HEALTH SNAPSHOT (every 300 cycles = ~5 minutes at 1s interval) ===
-        if self._scans_completed % 300 == 0:
+        # === HEALTH SNAPSHOT (every 300 cycles = ~5 minutes) ===
+        if self._fetches_completed % 300 == 0:
             await self._save_health_snapshot()
 
-        # Log results periodically (every 60 cycles = ~1 minute at 1s interval)
-        if self._scans_completed % 60 == 1:
+        # Log results periodically (every 60 cycles = ~1 minute)
+        if self._fetches_completed % 60 == 1:
             # Get auto-execution stats from Rust
             try:
                 auto_execs, auto_successes = self.engine.get_auto_execution_stats()
@@ -199,12 +191,9 @@ class UnifiedScanner:
                 auto_exec_info = ""
 
             logger.info(
-                f"🔍 Scan: {total_paths} paths, {profitable_count} profitable (>{min_threshold_pct:.2f}%) "
+                f"📊 UI Cache: {total_paths} paths, {profitable_count} profitable (>{min_threshold_pct:.2f}%) "
                 f"(cache age: {cache_age_ms}ms){auto_exec_info}"
             )
-
-        # NOTE: Execution is handled by Rust auto-execution
-        # No Python execution loop needed anymore!
 
     def _save_rust_trade_result(
         self,
@@ -248,7 +237,7 @@ class UnifiedScanner:
             db.close()
 
     async def _save_opportunities_to_history(self, opportunities):
-        """Save detected opportunities to history"""
+        """Save detected opportunities to history for analytics"""
         from app.models.models import OpportunityHistory
         from sqlalchemy import delete
 
@@ -335,7 +324,7 @@ class UnifiedScanner:
         finally:
             db.close()
 
-    def _update_scanner_status(
+    def _update_status(
         self,
         is_running: bool = None,
         pairs_scanned: int = None,
@@ -345,7 +334,7 @@ class UnifiedScanner:
         scan_duration_ms: float = None,
         last_error: str = None,
     ):
-        """Update scanner status in database"""
+        """Update status in database"""
         manager = get_live_trading_manager()
         if manager:
             manager.update_scanner_status(
@@ -371,7 +360,7 @@ class UnifiedScanner:
         self.best_profit_today = 0.0
 
     def get_status(self) -> Dict[str, Any]:
-        """Get current scanner status"""
+        """Get current status"""
         # Get auto-execution stats from Rust if available
         auto_execs, auto_successes = 0, 0
         try:
@@ -382,8 +371,8 @@ class UnifiedScanner:
         return {
             'is_running': self._running,
             'check_interval': self._check_interval,
-            'scans_completed': self._scans_completed,
-            'last_scan_at': self._last_scan_at.isoformat() if self._last_scan_at else None,
+            'fetches_completed': self._fetches_completed,
+            'last_fetch_at': self._last_fetch_at.isoformat() if self._last_fetch_at else None,
             'last_health_snapshot_at': self._last_health_snapshot_at.isoformat() if self._last_health_snapshot_at else None,
             'cached_opportunities_count': len(self.cached_opportunities),
             'best_profit_today': self.best_profit_today,
@@ -393,38 +382,44 @@ class UnifiedScanner:
 
 
 # Singleton instance
-_scanner: Optional[UnifiedScanner] = None
+_ui_cache: Optional[UICacheManager] = None
 
 
-def get_scanner() -> Optional[UnifiedScanner]:
-    """Get the global scanner instance"""
-    return _scanner
+def get_ui_cache() -> Optional[UICacheManager]:
+    """Get the global UI cache manager instance"""
+    return _ui_cache
 
 
-def initialize_scanner(engine, kraken_client, db_session_factory) -> UnifiedScanner:
-    """Initialize the global scanner"""
-    global _scanner
-    _scanner = UnifiedScanner(engine, kraken_client, db_session_factory)
-    return _scanner
+def initialize_ui_cache(engine, kraken_client, db_session_factory) -> UICacheManager:
+    """Initialize the global UI cache manager"""
+    global _ui_cache
+    _ui_cache = UICacheManager(engine, kraken_client, db_session_factory)
+    return _ui_cache
 
 
-def start_scanner():
-    """Start the scanner if initialized"""
-    if _scanner:
-        _scanner.start()
+def start_ui_cache():
+    """Start the UI cache manager if initialized"""
+    if _ui_cache:
+        _ui_cache.start()
     else:
-        logger.warning("Scanner not initialized")
+        logger.warning("UI Cache Manager not initialized")
 
 
-def stop_scanner():
-    """Stop the scanner"""
-    if _scanner:
-        _scanner.stop()
+def stop_ui_cache():
+    """Stop the UI cache manager"""
+    if _ui_cache:
+        _ui_cache.stop()
 
 
-# Keep old names for backwards compatibility
-LiveTradingScanner = UnifiedScanner
-get_live_scanner = get_scanner
-initialize_live_scanner = lambda engine, kraken_client: initialize_scanner(engine, kraken_client, None)
-start_live_scanner = start_scanner
-stop_live_scanner = stop_scanner
+# Backwards compatibility aliases (will be removed in future)
+# These old names were confusing - this is NOT a scanner
+UnifiedScanner = UICacheManager
+LiveTradingScanner = UICacheManager
+get_scanner = get_ui_cache
+get_live_scanner = get_ui_cache
+initialize_scanner = initialize_ui_cache
+start_scanner = start_ui_cache
+stop_scanner = stop_ui_cache
+initialize_live_scanner = lambda engine, kraken_client: initialize_ui_cache(engine, kraken_client, None)
+start_live_scanner = start_ui_cache
+stop_live_scanner = stop_ui_cache

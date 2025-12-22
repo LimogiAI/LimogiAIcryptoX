@@ -9,7 +9,10 @@ Components:
 - guard.py: Pre-trade safety checks (TradeGuard)
 - circuit_breaker.py: Loss limits and emergency stop (CircuitBreaker)
 - config.py: Settings management (ConfigManager)
-- scanner.py: Unified scanner (opportunities, health, trading)
+- ui_cache.py: UI cache manager (fetches from Rust, NOT a scanner)
+
+NOTE: All scanning happens in Rust engine (rust_engine/src/).
+The ui_cache.py just fetches cached data from Rust for UI display.
 """
 
 from .manager import LiveTradingManager, get_live_trading_manager, initialize_live_trading
@@ -17,13 +20,19 @@ from .executor import LiveExecutor
 from .guard import TradeGuard
 from .circuit_breaker import CircuitBreaker
 from .config import ConfigManager
-from .scanner import (
+from .ui_cache import (
+    # New proper names
+    UICacheManager,
+    get_ui_cache,
+    initialize_ui_cache,
+    start_ui_cache,
+    stop_ui_cache,
+    # Backwards compatibility aliases (confusing old names)
     UnifiedScanner,
     get_scanner,
     initialize_scanner,
     start_scanner,
     stop_scanner,
-    # Backwards compatibility aliases
     LiveTradingScanner,
     get_live_scanner,
     initialize_live_scanner,
@@ -39,13 +48,18 @@ __all__ = [
     'TradeGuard',
     'CircuitBreaker',
     'ConfigManager',
-    # New unified scanner
+    # New proper names for UI cache
+    'UICacheManager',
+    'get_ui_cache',
+    'initialize_ui_cache',
+    'start_ui_cache',
+    'stop_ui_cache',
+    # Backwards compatibility (old confusing names)
     'UnifiedScanner',
     'get_scanner',
     'initialize_scanner',
     'start_scanner',
     'stop_scanner',
-    # Backwards compatibility
     'LiveTradingScanner',
     'get_live_scanner',
     'initialize_live_scanner',
