@@ -507,6 +507,22 @@
   color: #f59e0b !important;
 }
 
+.fee-loading {
+  color: #888 !important;
+  font-style: italic;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.fee-error {
+  color: #ef4444 !important;
+  cursor: help;
+}
+
 .summary-note {
   font-size: 11px;
   color: #666;

@@ -10,6 +10,7 @@
 //! - Numeric prices instead of strings
 //! - CRC32 checksum validation
 
+use crate::kraken_pairs::SelectedPair;
 use crate::order_book::{OrderBookCache, PairInfo};
 use crate::types::OrderBookLevel;
 use futures_util::{SinkExt, StreamExt};
@@ -114,17 +115,6 @@ pub trait V2EventHandler: Send + Sync {
 // WebSocket v2 Client
 // ============================================================================
 
-/// Temporary pair info for sorting by volume
-#[derive(Clone)]
-struct TempPairInfo {
-    pair_name: String,
-    base: String,
-    quote: String,
-    kraken_id: String,
-    ws_name: String,
-    volume_24h: f64,
-}
-
 /// Bounded event channel capacity
 /// This limits memory usage when processing is slow
 /// If channel is full, new events are dropped (acceptable for order book updates)
@@ -210,190 +200,27 @@ impl KrakenWebSocketV2 {
         self.orderbook_depth
     }
 
-    /// Initialize by fetching trading pairs from REST API
-    pub async fn initialize(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Fetching trading pairs from Kraken (limit: {})...", self.max_pairs);
+    /// Initialize with pre-selected pairs from KrakenPairSelector
+    /// This replaces the old initialize() that fetched all pairs
+    pub fn initialize_with_pairs(&mut self, pairs: Vec<SelectedPair>) {
+        info!("Initializing WebSocket with {} pre-selected pairs", pairs.len());
 
-        let client = reqwest::Client::new();
-
-        // Step 1: Fetch all pair info
-        let response = client
-            .get(format!("{}/0/public/AssetPairs", KRAKEN_REST_URL))
-            .send()
-            .await?;
-
-        let data: Value = response.json().await?;
-
-        if let Some(error) = data.get("error").and_then(|e| e.as_array()) {
-            if !error.is_empty() {
-                return Err(format!("Kraken API error: {:?}", error).into());
-            }
-        }
-
-        let result = data.get("result").ok_or("No result in response")?;
-        let pairs = result.as_object().ok_or("Result is not an object")?;
-
-        // Collect all pairs temporarily
-        let mut temp_pairs: Vec<TempPairInfo> = Vec::new();
-
-        for (kraken_id, pair_info) in pairs {
-            // Skip dark pool pairs
-            if pair_info.get("altname")
-                .and_then(|v| v.as_str())
-                .map(|s| s.ends_with(".d"))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-
-            let base = self.normalize_currency(
-                pair_info.get("base").and_then(|v| v.as_str()).unwrap_or("")
-            );
-            let quote = self.normalize_currency(
-                pair_info.get("quote").and_then(|v| v.as_str()).unwrap_or("")
-            );
-
-            if base.is_empty() || quote.is_empty() {
-                continue;
-            }
-
-            // v2 uses symbols like "BTC/USD" (with slash)
-            let ws_name = pair_info
-                .get("wsname")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&format!("{}/{}", base, quote))
-                .to_string();
-
-            let pair_name = format!("{}/{}", base, quote);
-
-            temp_pairs.push(TempPairInfo {
-                pair_name,
-                base,
-                quote,
-                kraken_id: kraken_id.clone(),
-                ws_name,
-                volume_24h: 0.0,
-            });
-        }
-
-        info!("Found {} total pairs, fetching volumes...", temp_pairs.len());
-
-        // Step 2: Fetch volumes for all pairs
-        let kraken_ids: Vec<String> = temp_pairs.iter().map(|p| p.kraken_id.clone()).collect();
-
-        for chunk in kraken_ids.chunks(100) {
-            let response = client
-                .get(format!("{}/0/public/Ticker", KRAKEN_REST_URL))
-                .query(&[("pair", chunk.join(","))])
-                .send()
-                .await?;
-
-            let data: Value = response.json().await?;
-
-            if let Some(result) = data.get("result").and_then(|r| r.as_object()) {
-                for (kraken_id, ticker) in result {
-                    // Find and update volume
-                    for pair in temp_pairs.iter_mut() {
-                        if pair.kraken_id == *kraken_id {
-                            pair.volume_24h = ticker.get("v")
-                                .and_then(|v| v.get(1))
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap_or(0.0);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Rate limit
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-
-        // Step 3: Sort by volume and take top N
-        temp_pairs.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
-        let top_pairs: Vec<TempPairInfo> = temp_pairs.into_iter().take(self.max_pairs).collect();
-
-        info!("Selected top {} pairs by volume", top_pairs.len());
-
-        // Step 4: Register only top pairs and build symbol mapping
-        for pair in &top_pairs {
+        for pair in pairs {
+            // Register pair in cache
             self.cache.register_pair(PairInfo {
                 pair_name: pair.pair_name.clone(),
                 base: pair.base.clone(),
                 quote: pair.quote.clone(),
                 kraken_id: pair.kraken_id.clone(),
                 ws_name: pair.ws_name.clone(),
-                volume_24h: pair.volume_24h,
+                volume_24h: pair.volume_24h_usd,
             });
 
             // Build symbol to pair mapping for v2 messages
             self.symbol_to_pair.insert(pair.ws_name.clone(), pair.pair_name.clone());
         }
 
-        info!("Registered {} trading pairs (limited from full set)", self.cache.get_all_pairs().len());
-        Ok(())
-    }
-
-    /// Fetch initial prices via REST API
-    pub async fn fetch_initial_prices(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Fetching initial prices...");
-
-        let client = reqwest::Client::new();
-        let pairs: Vec<String> = self.cache.get_all_pairs();
-
-        // Fetch in batches
-        for chunk in pairs.chunks(100) {
-            let pair_ids: Vec<String> = chunk
-                .iter()
-                .filter_map(|p| self.cache.get_pair_info(p).map(|i| i.kraken_id))
-                .collect();
-
-            if pair_ids.is_empty() {
-                continue;
-            }
-
-            let response = client
-                .get(format!("{}/0/public/Ticker", KRAKEN_REST_URL))
-                .query(&[("pair", pair_ids.join(","))])
-                .send()
-                .await?;
-
-            let data: Value = response.json().await?;
-
-            if let Some(result) = data.get("result").and_then(|r| r.as_object()) {
-                for (kraken_id, ticker) in result {
-                    // Find pair name from kraken_id
-                    if let Some(pair_name) = self.find_pair_by_kraken_id(kraken_id) {
-                        let bid = ticker.get("b")
-                            .and_then(|b| b.get(0))
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .unwrap_or(0.0);
-
-                        let ask = ticker.get("a")
-                            .and_then(|a| a.get(0))
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .unwrap_or(0.0);
-
-                        let volume = ticker.get("v")
-                            .and_then(|v| v.get(1))
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .unwrap_or(0.0);
-
-                        self.cache.update_price_ticker(&pair_name, bid, ask, volume);
-                    }
-                }
-            }
-
-            // Rate limit
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-
-        info!("Loaded initial prices for {} pairs", self.cache.get_all_prices().len());
-        Ok(())
+        info!("Registered {} trading pairs for WebSocket subscription", self.cache.get_all_pairs().len());
     }
 
     /// Start WebSocket v2 connection and subscribe to channels
@@ -777,38 +604,6 @@ impl KrakenWebSocketV2 {
     /// Get message count
     pub fn messages_received(&self) -> u64 {
         self.messages_received.load(Ordering::Relaxed)
-    }
-
-    /// Normalize Kraken currency symbol
-    fn normalize_currency(&self, symbol: &str) -> String {
-        let s = symbol.to_uppercase();
-
-        // Strip X/Z prefix from legacy Kraken symbols
-        if s.len() == 4 && (s.starts_with('X') || s.starts_with('Z')) {
-            let suffix = &s[1..];
-            if matches!(suffix, "ETH" | "XBT" | "EUR" | "USD" | "GBP" | "JPY" | "CAD" | "AUD") {
-                return suffix.to_string();
-            }
-        }
-
-        // Normalize XBT to BTC
-        if s == "XBT" {
-            return "BTC".to_string();
-        }
-
-        s
-    }
-
-    /// Find pair name from kraken_id
-    fn find_pair_by_kraken_id(&self, kraken_id: &str) -> Option<String> {
-        for pair in self.cache.get_all_pairs() {
-            if let Some(info) = self.cache.get_pair_info(&pair) {
-                if info.kraken_id == kraken_id {
-                    return Some(pair);
-                }
-            }
-        }
-        None
     }
 }
 

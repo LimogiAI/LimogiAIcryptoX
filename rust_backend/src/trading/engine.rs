@@ -7,6 +7,7 @@ use crate::config_manager::ConfigManager;
 use crate::db::{Database, LiveTradingConfig, LiveTrade};
 use crate::event_system::EventDrivenScanner;
 use crate::executor::{ExecutionEngine, TradeResult, FeeConfig};
+use crate::kraken_pairs::{KrakenPairSelector, PairSelectionConfig};
 use crate::order_book::OrderBookCache;
 use crate::trading_config::TradingGuard;
 use crate::types::{EngineConfig, EngineStats, Opportunity, OrderBookHealth, EngineSettings};
@@ -90,7 +91,7 @@ impl Default for InternalSettings {
     fn default() -> Self {
         Self {
             scan_interval_ms: 5000,
-            max_pairs: 300,
+            max_pairs: 100,  // More pairs for better triangular arbitrage opportunities
             orderbook_depth: 25,
             scanner_enabled: true,
         }
@@ -182,17 +183,38 @@ impl TradingEngine {
     /// Start the trading engine
     pub async fn start(&self) -> Result<(), EngineError> {
         info!("Starting trading engine...");
-        
+
         let settings = self.settings.read().await.clone();
-        
-        // Initialize WebSocket
+
+        // Step 1: Select pairs using KrakenPairSelector (HFT-optimized)
+        info!("Selecting high-liquidity pairs for HFT arbitrage...");
+        let pair_config = PairSelectionConfig {
+            max_pairs: settings.max_pairs,
+            min_volume_24h_usd: 50_000.0,
+            max_cost_min: 20.0,
+            allowed_quote_currencies: vec!["USD".to_string(), "EUR".to_string()],
+            // USDT/USDC restricted in Canada
+            blocked_base_currencies: vec!["USDT".to_string(), "USDC".to_string()],
+        };
+        let pair_selector = KrakenPairSelector::new(pair_config);
+
+        let selected_pairs = pair_selector.select_pairs().await
+            .map_err(|e| EngineError::WebSocket(format!("Pair selection failed: {}", e)))?;
+
+        if selected_pairs.is_empty() {
+            return Err(EngineError::WebSocket("No pairs selected for trading".to_string()));
+        }
+
+        info!("Selected {} pairs for HFT arbitrage", selected_pairs.len());
+
+        // Step 2: Initialize WebSocket with selected pairs
         let mut ws = KrakenWebSocketV2::new(Arc::clone(&self.cache));
-        ws.set_max_pairs(settings.max_pairs);
-        
+        ws.set_max_pairs(selected_pairs.len());
+
         // Create event channel and connect to scanner
         let (mut event_rx, _event_stats) = ws.create_event_channel();
         let event_scanner = Arc::clone(&self.event_scanner);
-        
+
         // Spawn task to receive orderbook events and trigger scans
         tokio::spawn(async move {
             while let Some(pair) = event_rx.recv().await {
@@ -200,19 +222,14 @@ impl TradingEngine {
             }
             info!("Event channel closed");
         });
-        
-        // Initialize (fetch pairs)
-        ws.initialize().await
-            .map_err(|e| EngineError::WebSocket(e.to_string()))?;
-        
-        // Fetch initial prices
-        ws.fetch_initial_prices().await
-            .map_err(|e| EngineError::WebSocket(e.to_string()))?;
-        
-        // Start WebSocket streaming
+
+        // Initialize with pre-selected pairs (no REST API fetch needed)
+        ws.initialize_with_pairs(selected_pairs);
+
+        // Start WebSocket streaming (prices come directly from WebSocket)
         ws.start(settings.max_pairs, settings.orderbook_depth).await
             .map_err(|e| EngineError::WebSocket(e.to_string()))?;
-        
+
         *self.websocket.write().await = Some(ws);
         
         // Initialize execution engine if authenticated
@@ -359,8 +376,15 @@ impl TradingEngine {
                 // Update execution tracking BEFORE executing
                 last_execution_time = Some(std::time::Instant::now());
                 last_executed_path = Some(opp.path.clone());
-                
-                info!("🚀 Auto-executing: {} | Expected profit: {:.3}%", opp.path, opp.net_profit_pct);
+
+                // Log execution - warn if expected loss (TEST MODE)
+                if opp.net_profit_pct < 0.0 {
+                    warn!("⚠️ TEST MODE: Executing trade with EXPECTED LOSS: {:.3}%", opp.net_profit_pct);
+                    warn!("🚀 TEST EXECUTION: {} | Expected loss: {:.3}% (${:.2})",
+                        opp.path, opp.net_profit_pct, config.trade_amount * opp.net_profit_pct.abs() / 100.0);
+                } else {
+                    info!("🚀 Auto-executing: {} | Expected profit: {:.3}%", opp.path, opp.net_profit_pct);
+                }
                 
                 // Get execution engine
                 let exec_result = match &execution_engine {
@@ -429,7 +453,16 @@ impl TradingEngine {
         
         self.is_running.store(true, Ordering::SeqCst);
         *self.start_time.write().await = Some(Instant::now());
-        
+
+        // Check for TEST MODE (negative profit threshold)
+        let config = self.trading_guard.get_config();
+        if config.min_profit_threshold < 0.0 {
+            warn!("⚠️⚠️⚠️ TEST MODE ACTIVE ⚠️⚠️⚠️");
+            warn!("⚠️ min_profit_threshold = {:.1}% (ACCEPTING LOSSES!)", config.min_profit_threshold);
+            warn!("⚠️ Will execute trades with up to {:.1}% loss", config.min_profit_threshold.abs());
+            warn!("⚠️⚠️⚠️ REVERT AFTER TESTING ⚠️⚠️⚠️");
+        }
+
         info!("Trading engine started successfully");
         Ok(())
     }
@@ -650,12 +683,12 @@ impl TradingEngine {
         let max_pairs = settings.max_pairs;
         let depth = settings.orderbook_depth;
         drop(settings);
-        
+
         info!("Restarting WebSocket with max_pairs={}, depth={}", max_pairs, depth);
-        
+
         // Clear existing cache data for fresh start
         self.cache.clear();
-        
+
         // Stop existing WebSocket
         {
             let mut ws_guard = self.websocket.write().await;
@@ -663,33 +696,50 @@ impl TradingEngine {
                 ws.stop().await;
             }
         }
-        
+
         // Small delay to allow clean disconnect
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        
-        // Create and start new WebSocket with updated settings
+
+        // Re-select pairs using KrakenPairSelector
+        info!("Re-selecting high-liquidity pairs...");
+        let pair_config = PairSelectionConfig {
+            max_pairs,
+            min_volume_24h_usd: 50_000.0,
+            max_cost_min: 20.0,
+            allowed_quote_currencies: vec!["USD".to_string(), "EUR".to_string()],
+            // USDT/USDC restricted in Canada
+            blocked_base_currencies: vec!["USDT".to_string(), "USDC".to_string()],
+        };
+        let pair_selector = KrakenPairSelector::new(pair_config);
+
+        let selected_pairs = pair_selector.select_pairs().await
+            .map_err(|e| EngineError::WebSocket(format!("Pair selection failed: {}", e)))?;
+
+        if selected_pairs.is_empty() {
+            return Err(EngineError::WebSocket("No pairs selected for trading".to_string()));
+        }
+
+        // Create and start new WebSocket with selected pairs
         {
             let mut ws_guard = self.websocket.write().await;
             let mut ws = KrakenWebSocketV2::new(Arc::clone(&self.cache));
-            
-            // Set max_pairs BEFORE initialize so it fetches correct number
-            ws.set_max_pairs(max_pairs);
+
+            ws.set_max_pairs(selected_pairs.len());
             ws.set_orderbook_depth(depth);
-            
-            // Initialize and start with new settings
-            ws.initialize().await
-                .map_err(|e| EngineError::WebSocket(e.to_string()))?;
-            ws.fetch_initial_prices().await
-                .map_err(|e| EngineError::WebSocket(e.to_string()))?;
+
+            // Initialize with pre-selected pairs
+            ws.initialize_with_pairs(selected_pairs);
+
+            // Start WebSocket streaming
             ws.start(max_pairs, depth).await
                 .map_err(|e| EngineError::WebSocket(e.to_string()))?;
-            
+
             *ws_guard = Some(ws);
         }
-        
+
         // Reinitialize the graph with new pairs from cache
         self.event_scanner.initialize_graph();
-        
+
         info!("WebSocket restarted successfully with {} pairs", max_pairs);
         Ok(())
     }
@@ -865,7 +915,8 @@ impl TradingEngine {
             .unwrap()
             .as_millis() as u64;
         
-        let post_data = format!("nonce={}", nonce);
+        // Include a pair to get fee information (required by Kraken API)
+        let post_data = format!("nonce={}&pair=XBTUSD", nonce);
         let path = "/0/private/TradeVolume";
         let url = format!("https://api.kraken.com{}", path);
         
@@ -896,25 +947,26 @@ impl TradingEngine {
             let fees = result.get("fees").cloned().unwrap_or(serde_json::json!({}));
             let fees_maker = result.get("fees_maker").cloned().unwrap_or(serde_json::json!({}));
             let volume = result.get("volume").and_then(|v| v.as_str()).unwrap_or("0");
-            
-            // Get the first fee tier (usually the user's current tier)
+
+            // Parse taker fee from API response - no fallbacks, must get real values
             let taker_fee = fees.as_object()
                 .and_then(|f| f.values().next())
                 .and_then(|v| v.get("fee"))
                 .and_then(|f| f.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.26) / 100.0;
-            
+                .ok_or_else(|| "Failed to parse taker fee from Kraken API response".to_string())?;
+
+            // Parse maker fee from API response - no fallbacks, must get real values
             let maker_fee = fees_maker.as_object()
                 .and_then(|f| f.values().next())
                 .and_then(|v| v.get("fee"))
                 .and_then(|f| f.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.16) / 100.0;
-            
+                .ok_or_else(|| "Failed to parse maker fee from Kraken API response".to_string())?;
+
             Ok(serde_json::json!({
-                "maker_fee": maker_fee,
-                "taker_fee": taker_fee,
+                "maker_fee": maker_fee / 100.0,
+                "taker_fee": taker_fee / 100.0,
                 "volume_30d": volume,
                 "source": "kraken_api"
             }))

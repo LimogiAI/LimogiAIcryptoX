@@ -324,12 +324,12 @@ impl EventDrivenScanner {
             }
         }
 
-        // AUTO-EXECUTION: If enabled, send best profitable opportunity to execution channel
+        // AUTO-EXECUTION: If enabled, send best opportunity to execution channel
         if self.auto_execution_enabled.load(Ordering::Relaxed) {
             if let Some(ref tx) = *self.auto_exec_tx.read() {
-                // Find the best profitable opportunity
+                // Send the best opportunity - let the engine's trading_guard do the filtering
+                // The engine has the actual trading config from the database
                 if let Some(best_opp) = opportunities.iter()
-                    .filter(|o| o.is_profitable)
                     .max_by(|a, b| a.net_profit_pct.partial_cmp(&b.net_profit_pct).unwrap_or(std::cmp::Ordering::Equal))
                 {
                     if tx.send(best_opp.clone()).is_ok() {
@@ -394,10 +394,19 @@ impl EventDrivenScanner {
         // Get config for profit threshold and trade amount
         let config = trading_guard.get_config();
 
-        // Filter profitable opportunities
+        // Filter opportunities by profit threshold
+        // Note: For TEST MODE with negative threshold, we skip the is_profitable check
         let profitable: Vec<&Opportunity> = opportunities
             .iter()
-            .filter(|o| o.is_profitable && o.net_profit_pct >= config.min_profit_threshold)
+            .filter(|o| {
+                // If threshold is negative (TEST MODE), only check threshold
+                if config.min_profit_threshold < 0.0 {
+                    o.net_profit_pct >= config.min_profit_threshold
+                } else {
+                    // Normal mode: require is_profitable flag AND threshold
+                    o.is_profitable && o.net_profit_pct >= config.min_profit_threshold
+                }
+            })
             .collect();
 
         if profitable.is_empty() {
@@ -551,7 +560,7 @@ impl EventDrivenScanner {
         let config = self.config_manager.get_config();
         let base_currencies = self.base_currencies.read().clone();
 
-        if self.use_incremental.load(Ordering::Relaxed) {
+        let opportunities = if self.use_incremental.load(Ordering::Relaxed) {
             // Use persistent graph for scanning (faster)
             let graph = self.persistent_graph.read();
             graph.scan(&base_currencies, &config)
@@ -560,7 +569,14 @@ impl EventDrivenScanner {
             self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
             let scanner = Scanner::new(Arc::clone(&self.cache), config);
             scanner.scan(&base_currencies)
+        };
+
+        // Log scan results for debugging
+        if self.scan_count.load(Ordering::Relaxed) % 100 == 0 {
+            info!("Scan #{}: found {} opportunities", self.scan_count.load(Ordering::Relaxed), opportunities.len());
         }
+
+        opportunities
     }
 
     /// Manually trigger a scan (for polling mode or on-demand)

@@ -37,7 +37,9 @@ impl Default for TradingConfig {
         Self {
             enabled: false,
             trade_amount: 10.0,
-            min_profit_threshold: 0.3, // 0.3%
+            // ⚠️ TEMPORARY TEST MODE: Accept losses up to -10% (≈$10 on $100 trade)
+            // TODO: Revert to 0.3 after testing!
+            min_profit_threshold: -10.0, // -10% = accept losses up to $10 on $100 trade
             max_daily_loss: 30.0,
             max_total_loss: 30.0,
             base_currency: "USD".to_string(),

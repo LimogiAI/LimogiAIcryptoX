@@ -12,6 +12,7 @@ mod config_manager;
 mod event_system;
 mod executor;
 mod graph_manager;
+mod kraken_pairs;
 mod order_book;
 mod scanner;
 mod slippage;

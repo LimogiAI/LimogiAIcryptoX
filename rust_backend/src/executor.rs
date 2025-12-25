@@ -316,9 +316,33 @@ impl ExecutionEngine {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
+                        // Log all private WS messages for debugging
+                        debug!("Private WS received: {}", text);
+
                         if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                            // Log important messages
+                            if let Some(method) = json.get("method").and_then(|m| m.as_str()) {
+                                if method == "subscribe" {
+                                    if json.get("success").and_then(|s| s.as_bool()) == Some(true) {
+                                        info!("Subscribed to executions channel");
+                                    } else {
+                                        warn!("Failed to subscribe to executions: {:?}", json);
+                                    }
+                                }
+                            }
+
+                            // Log add_order responses
+                            if json.get("method").and_then(|m| m.as_str()) == Some("add_order") {
+                                if json.get("success").and_then(|s| s.as_bool()) == Some(true) {
+                                    info!("Order placed: {:?}", json.get("result"));
+                                } else {
+                                    warn!("Order failed: {:?}", json);
+                                }
+                            }
+
                             // Handle execution updates
                             if json.get("channel").and_then(|c| c.as_str()) == Some("executions") {
+                                debug!("Execution update received: {:?}", json);
                                 if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
                                     for exec in data {
                                         let order_id = exec.get("order_id")
@@ -342,7 +366,10 @@ impl ExecutionEngine {
                                             .and_then(|f| f.as_str())
                                             .and_then(|s| s.parse::<f64>().ok())
                                             .unwrap_or(0.0);
-                                        
+
+                                        info!("Execution update: order={}, cl_ord={}, status={}, filled={}, avg_price={}",
+                                              order_id, cl_ord_id, status, filled, avg_price);
+
                                         // Check if order is complete
                                         if status == "filled" || status == "canceled" || status == "expired" {
                                             let mut orders = pending_orders.write().await;
@@ -440,18 +467,34 @@ impl ExecutionEngine {
         }
         
         // Build order message
-        let order_msg = json!({
-            "method": "add_order",
-            "params": {
-                "order_type": "market",
-                "side": side.to_string(),
-                "symbol": pair,
-                "order_qty": quantity,
-                "cl_ord_id": client_id,
-                "token": token
-            },
-            "req_id": req_id
-        });
+        // For BUY orders: use cash_order_qty (quote currency amount, e.g., USD)
+        // For SELL orders: use order_qty (base currency amount, e.g., ETH)
+        let order_msg = match side {
+            OrderSide::Buy => json!({
+                "method": "add_order",
+                "params": {
+                    "order_type": "market",
+                    "side": "buy",
+                    "symbol": pair,
+                    "cash_order_qty": quantity,  // Spend this much quote currency (e.g., $10 USD)
+                    "cl_ord_id": client_id,
+                    "token": token
+                },
+                "req_id": req_id
+            }),
+            OrderSide::Sell => json!({
+                "method": "add_order",
+                "params": {
+                    "order_type": "market",
+                    "side": "sell",
+                    "symbol": pair,
+                    "order_qty": quantity,  // Sell this much base currency (e.g., 0.003 ETH)
+                    "cl_ord_id": client_id,
+                    "token": token
+                },
+                "req_id": req_id
+            }),
+        };
         
         // Send order
         {

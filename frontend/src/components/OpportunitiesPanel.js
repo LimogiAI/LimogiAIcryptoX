@@ -40,8 +40,13 @@ export function OpportunitiesPanel({
     }
   };
 
-  // Filter to only profitable opportunities
-  const profitableOpportunities = opportunities?.filter(opp => opp.is_profitable) || [];
+  // Filter opportunities
+  // TEST MODE: Accept opportunities with losses up to -10% (for testing execution flow)
+  // TODO: Revert to (opp.is_profitable) after testing!
+  const TEST_MODE_THRESHOLD = -10.0; // -10% loss threshold for testing
+  const profitableOpportunities = opportunities?.filter(opp =>
+    opp.is_profitable || opp.net_profit_pct >= TEST_MODE_THRESHOLD
+  ) || [];
   
   // Pagination for live opportunities
   const totalLivePages = Math.ceil(profitableOpportunities.length / livePerPage);

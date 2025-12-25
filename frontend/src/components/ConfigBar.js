@@ -7,6 +7,8 @@ export function ConfigBar() {
   const [status, setStatus] = useState(null);
   const [pendingConfig, setPendingConfig] = useState({});
   const [krakenFees, setKrakenFees] = useState(null);
+  const [feeStatus, setFeeStatus] = useState('loading'); // 'loading' | 'success' | 'error'
+  const [feeError, setFeeError] = useState(null);
   const [message, setMessage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [tradingLoading, setTradingLoading] = useState(false);
@@ -23,12 +25,22 @@ export function ConfigBar() {
       const [configRes, statusRes, feesRes] = await Promise.all([
         api.getLiveConfig(),
         api.getLiveStatus().catch(() => null),
-        api.getKrakenFees().catch(() => null)
+        api.getKrakenFees().catch((err) => ({ success: false, error: err.message }))
       ]);
       setConfig(configRes.config);
       if (statusRes) setStatus(statusRes);
-      if (feesRes) setKrakenFees(feesRes);
-      
+
+      // Handle fee response - no fallbacks, must get real values
+      if (feesRes?.success && feesRes?.data) {
+        setKrakenFees(feesRes.data);
+        setFeeStatus('success');
+        setFeeError(null);
+      } else {
+        setKrakenFees(null);
+        setFeeStatus('error');
+        setFeeError(feesRes?.error || 'Unable to fetch fees from Kraken API');
+      }
+
       // Only load custom currencies from backend on initial load
       if (!initialLoadDone) {
         if (configRes.config?.base_currency === 'CUSTOM' && configRes.config?.custom_currencies) {
@@ -158,16 +170,18 @@ export function ConfigBar() {
   const isEnabled = status?.enabled || config?.is_enabled;
   const isCircuitBroken = status?.state?.is_circuit_broken;
 
-  // Fee calculations
-  const makerFee = krakenFees?.maker_fee ? (krakenFees.maker_fee * 100).toFixed(2) : '0.16';
-  const takerFee = krakenFees?.taker_fee ? (krakenFees.taker_fee * 100).toFixed(2) : '0.26';
-  const totalFees = krakenFees?.taker_fee ? krakenFees.taker_fee * 100 * 3 : 0.78;
+  // Fee calculations - no hardcoded fallbacks
+  const makerFee = krakenFees?.maker_fee ? (krakenFees.maker_fee * 100).toFixed(2) : null;
+  const takerFee = krakenFees?.taker_fee ? (krakenFees.taker_fee * 100).toFixed(2) : null;
+  const totalFees = krakenFees?.taker_fee ? krakenFees.taker_fee * 100 * 3 : null;
   const thresholdPct = currentThreshold * 100;
-  
+
   let thresholdStatus = null;
-  if (thresholdPct < totalFees) {
+  if (feeStatus === 'error') {
+    thresholdStatus = { type: 'danger', text: '⚠️ Fee data unavailable' };
+  } else if (totalFees !== null && thresholdPct < totalFees) {
     thresholdStatus = { type: 'danger', text: `⚠️ Below fees (${totalFees.toFixed(2)}%)` };
-  } else if (thresholdPct < totalFees * 1.5) {
+  } else if (totalFees !== null && thresholdPct < totalFees * 1.5) {
     thresholdStatus = { type: 'warning', text: `Low margin` };
   }
 
@@ -211,8 +225,20 @@ export function ConfigBar() {
         <div className="summary-item">
           <span className="summary-icon">💸</span>
           <span className="summary-label">Fees:</span>
-          <span className="summary-value fee-value">{makerFee}% / {takerFee}%</span>
-          <span className="summary-note">(maker/taker)</span>
+          {feeStatus === 'loading' && (
+            <span className="summary-value fee-value fee-loading">Fetching...</span>
+          )}
+          {feeStatus === 'success' && makerFee && takerFee && (
+            <>
+              <span className="summary-value fee-value">{makerFee}% / {takerFee}%</span>
+              <span className="summary-note">(maker/taker)</span>
+            </>
+          )}
+          {feeStatus === 'error' && (
+            <span className="summary-value fee-value fee-error" title={feeError}>
+              ⚠️ Unable to fetch
+            </span>
+          )}
         </div>
       </div>
 
