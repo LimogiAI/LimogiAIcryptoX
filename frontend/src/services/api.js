@@ -159,20 +159,7 @@ export const api = {
 
   // Update engine settings (requires restart)
   async updateEngineSettings(settings) {
-    const params = new URLSearchParams();
-    if (settings.scan_interval_ms !== undefined) {
-      params.append('scan_interval_ms', settings.scan_interval_ms);
-    }
-    if (settings.max_pairs !== undefined) {
-      params.append('max_pairs', settings.max_pairs);
-    }
-    if (settings.orderbook_depth !== undefined) {
-      params.append('orderbook_depth', settings.orderbook_depth);
-    }
-    if (settings.scanner_enabled !== undefined) {
-      params.append('scanner_enabled', settings.scanner_enabled);
-    }
-    const response = await client.put(`/api/engine-settings?${params.toString()}`);
+    const response = await client.put('/api/engine-settings', settings);
     return response.data;
   },
 
@@ -238,7 +225,7 @@ export const api = {
 
   // Disable live trading
   async disableLiveTrading(reason = 'Manual disable') {
-    const response = await client.post(`/api/live/disable?reason=${encodeURIComponent(reason)}`);
+    const response = await client.post('/api/live/disable', { reason });
     return response.data;
   },
 
@@ -349,43 +336,7 @@ export const api = {
     return response.data;
   },
 
-  // ==================== RUST EXECUTION ENGINE API ====================
-
-  // Initialize Rust execution engine with API credentials
-  async initRustExecutionEngine(apiKey, apiSecret) {
-    const response = await client.post('/api/live/execution-engine/init', {
-      api_key: apiKey,
-      api_secret: apiSecret,
-    });
-    return response.data;
-  },
-
-  // Connect Rust execution engine to Kraken private WebSocket
-  async connectRustExecutionEngine() {
-    const response = await client.post('/api/live/execution-engine/connect');
-    return response.data;
-  },
-
-  // Disconnect Rust execution engine
-  async disconnectRustExecutionEngine() {
-    const response = await client.post('/api/live/execution-engine/disconnect');
-    return response.data;
-  },
-
-  // Get Rust execution engine status
-  async getRustExecutionEngineStatus() {
-    const response = await client.get('/api/live/execution-engine/status');
-    return response.data;
-  },
-
-  // Execute trade via Rust engine (sequential execution)
-  async executeViaRustEngine(path, amount) {
-    const response = await client.post('/api/live/execution-engine/execute', {
-      path,
-      amount,
-    });
-    return response.data;
-  },
+  // ==================== FEE CONFIGURATION API ====================
 
   // Get fee configuration
   async getFeeConfig() {
@@ -408,12 +359,6 @@ export const api = {
   // Get real Kraken account fees (from your trading volume tier)
   async getKrakenFees() {
     const response = await client.get('/api/live/kraken-fees');
-    return response.data;
-  },
-
-  // Sync Kraken fees to engine (fetch real fees and update engine)
-  async syncKrakenFees() {
-    const response = await client.post('/api/live/sync-kraken-fees');
     return response.data;
   },
 };

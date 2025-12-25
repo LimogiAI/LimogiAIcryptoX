@@ -17,9 +17,6 @@ export function LiveTradingPanel() {
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
   
-  // Scanner Status (opportunities removed - was dead code)
-  const [scannerStatus, setScannerStatus] = useState(null);
-  
   // Partial trades tracking
   const [partialTrades, setPartialTrades] = useState([]);
   const [resolvingTradeId, setResolvingTradeId] = useState(null);
@@ -27,10 +24,6 @@ export function LiveTradingPanel() {
   const [showResolveModal, setShowResolveModal] = useState(false);
   
   const [showEnableModal, setShowEnableModal] = useState(false);
-  const [pendingConfig, setPendingConfig] = useState({});
-  const [showCustomCurrencies, setShowCustomCurrencies] = useState(false);
-  const [customCurrencies, setCustomCurrencies] = useState([]);
-  const [customAmount, setCustomAmount] = useState('');
   
   // Filters for trades
   const [hoursFilter, setHoursFilter] = useState(24);
@@ -43,19 +36,10 @@ export function LiveTradingPanel() {
   
   // Expanded row for leg details
   const [expandedTradeId, setExpandedTradeId] = useState(null);
-  
-  // Expandable risks section
-  const [showRisks, setShowRisks] = useState(false);
 
   // Rust Execution Engine state
   const [rustEngineStatus, setRustEngineStatus] = useState(null);
-  const [feeConfig, setFeeConfig] = useState(null);
-  const [feeStats, setFeeStats] = useState(null);
   const [krakenFees, setKrakenFees] = useState(null);  // Real fees from Kraken
-  const [showFeeSettings, setShowFeeSettings] = useState(false);
-
-  const AVAILABLE_CURRENCIES = ['USD', 'USDT', 'EUR', 'BTC', 'ETH'];
-  const PRESET_AMOUNTS = [5, 10, 20, 50, 100];
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -65,38 +49,38 @@ export function LiveTradingPanel() {
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      const [statusRes, configRes, tradesRes, positionsRes, scannerRes, partialRes] = await Promise.all([
+      const [statusRes, configRes, tradesRes, positionsRes, partialRes] = await Promise.all([
         api.getLiveStatus(),
         api.getLiveConfig(),
         api.getLiveTrades(500), // Fetch more for filtering
         api.getLivePositions(),
-        api.getLiveScannerStatus ? api.getLiveScannerStatus() : Promise.resolve(null),
         api.getLivePartialTrades ? api.getLivePartialTrades() : Promise.resolve({ trades: [] }),
       ]);
       setStatus(statusRes);
       setConfig(configRes.config);
       setOptions(configRes.options);
       setTrades(tradesRes.trades || []);
-      setPositions(positionsRes);
-      setScannerStatus(scannerRes);
+      
+      // Extract positions data - now includes connected and total_usd from backend
+      setPositions({
+        positions: positionsRes?.positions || [],
+        connected: positionsRes?.connected || false,
+        total_usd: positionsRes?.total_usd || 0
+      });
+      
       setPartialTrades(partialRes?.trades || []);
-      if (configRes.config?.custom_currencies) setCustomCurrencies(configRes.config.custom_currencies);
-      if (configRes.config?.base_currency === 'CUSTOM') setShowCustomCurrencies(true);
 
-      // Fetch Rust execution engine status and Kraken fees
+      // Fetch Kraken fees and engine status
       try {
-        const [rustStatus, feeConfigRes, feeStatsRes, krakenFeesRes] = await Promise.all([
-          api.getRustExecutionEngineStatus().catch(() => null),
-          api.getFeeConfig().catch(() => null),
-          api.getFeeStats().catch(() => null),
-          api.getKrakenFees().catch(() => null),
-        ]);
-        setRustEngineStatus(rustStatus);
-        setFeeConfig(feeConfigRes);
-        setFeeStats(feeStatsRes);
-        setKrakenFees(krakenFeesRes);
+        const krakenFeesRes = await api.getKrakenFees().catch(() => null);
+        setKrakenFees(krakenFeesRes?.data || null);
+        
+        // Set rust engine status from main status - engine is connected if running
+        setRustEngineStatus({
+          connected: statusRes?.engine?.is_running || false,
+        });
       } catch (rustErr) {
-        // Rust engine may not be initialized - that's OK
+        // Fee stats may not be available - that's OK
       }
     } catch (err) {
       console.error('Error fetching live trading data:', err);
@@ -123,68 +107,6 @@ export function LiveTradingPanel() {
     }
   };
 
-  const handleDisable = async () => {
-    try {
-      await api.disableLiveTrading('Manual disable');
-      showToast('Live trading disabled', 'success');
-      fetchData();
-    } catch (err) {
-      showToast('Failed to disable live trading', 'error');
-    }
-  };
-
-  const handleEmergencyStop = async () => {
-    try {
-      await api.liveQuickDisable();
-      showToast('🛑 Emergency stop activated', 'warning');
-      fetchData();
-    } catch (err) {
-      showToast('Failed to stop trading', 'error');
-    }
-  };
-
-  const handleConfigChange = (key, value) => setPendingConfig(prev => ({ ...prev, [key]: value }));
-
-  const handleApplyConfig = async () => {
-    if (Object.keys(pendingConfig).length === 0) return;
-    try {
-      await api.updateLiveConfig(pendingConfig);
-      showToast('Configuration updated', 'success');
-      setPendingConfig({});
-      fetchData();
-    } catch (err) {
-      showToast(err.response?.data?.detail || 'Failed to update config', 'error');
-    }
-  };
-
-  const getConfigValue = (key, defaultValue) => {
-    if (pendingConfig[key] !== undefined) return pendingConfig[key];
-    if (config?.[key] !== undefined) return config[key];
-    return defaultValue;
-  };
-
-  const handleBaseCurrencyChange = (value) => {
-    handleConfigChange('base_currency', value);
-    setShowCustomCurrencies(value === 'CUSTOM');
-  };
-
-  const handleCustomCurrencyToggle = (currency) => {
-    const updated = customCurrencies.includes(currency) ? customCurrencies.filter(c => c !== currency) : [...customCurrencies, currency];
-    setCustomCurrencies(updated);
-    handleConfigChange('custom_currencies', updated);
-  };
-
-  const handleCustomAmountSubmit = () => {
-    const amount = parseFloat(customAmount);
-    if (!isNaN(amount) && amount > 0) {
-      handleConfigChange('trade_amount', amount);
-      setCustomAmount('');
-      showToast(`Trade amount set to $${amount}`, 'success');
-    } else {
-      showToast('Please enter a valid amount', 'error');
-    }
-  };
-
   const handleResetCircuitBreaker = async () => {
     try {
       await api.resetLiveCircuitBreaker();
@@ -203,12 +125,6 @@ export function LiveTradingPanel() {
     } catch (err) {
       showToast('Failed to reset daily stats', 'error');
     }
-  };
-
-  // Get fee config value with default
-  const getFeeConfigValue = (key, defaultValue) => {
-    if (feeConfig?.[key] !== undefined) return feeConfig[key];
-    return defaultValue;
   };
 
   // Partial trade handlers
@@ -355,10 +271,17 @@ export function LiveTradingPanel() {
 
   // Format timestamp
   const formatTimestamp = (timestamp) => {
-    if (!timestamp) return '--';
+    if (!timestamp && timestamp !== 0) return '--';
     try {
-      let ts = timestamp.endsWith('Z') || timestamp.includes('+') ? timestamp : timestamp + 'Z';
-      return new Date(ts).toLocaleString('en-US', {
+      let date;
+      if (typeof timestamp === 'number') {
+        date = new Date(timestamp);
+      } else {
+        let ts = timestamp.endsWith('Z') || timestamp.includes('+') ? timestamp : timestamp + 'Z';
+        date = new Date(ts);
+      }
+      if (isNaN(date.getTime())) return '--';
+      return date.toLocaleString('en-US', {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -368,10 +291,6 @@ export function LiveTradingPanel() {
     } catch { return '--'; }
   };
 
-  const hasPendingConfig = Object.keys(pendingConfig).length > 0;
-  const currentTradeAmount = getConfigValue('trade_amount', 10);
-  const currentThreshold = getConfigValue('min_profit_threshold', 0.003);
-
   const formatUSD = (value) => {
     if (value === null || value === undefined) return '--';
     const num = parseFloat(value);
@@ -379,19 +298,6 @@ export function LiveTradingPanel() {
     return num >= 0 ? `+$${num.toFixed(2)}` : `-$${Math.abs(num).toFixed(2)}`;
   };
 
-  const getThresholdWarning = () => {
-    const threshold = currentThreshold * 100;
-    const takerFee = krakenFees?.success ? krakenFees.taker_fee_pct : 0.26;
-    const makerFee = krakenFees?.success ? krakenFees.maker_fee_pct : 0.16;
-    if (threshold < takerFee) {
-      return { type: 'danger', message: `🔴 Very risky: Your trading fees are ${makerFee.toFixed(2)}-${takerFee.toFixed(2)}%` };
-    } else if (threshold < takerFee * 1.5) {
-      return { type: 'warning', message: '⚠️ Warning: Fees may exceed profits at this threshold' };
-    }
-    return null;
-  };
-
-  const thresholdWarning = getThresholdWarning();
   const filteredTrades = getFilteredTrades();
   const paginatedTrades = getPaginatedTrades();
   const totalPages = Math.ceil(filteredTrades.length / pageSize);
@@ -403,8 +309,8 @@ export function LiveTradingPanel() {
 
   if (loading) return <div className="panel live-trading-panel loading"><p>Loading live trading data...</p></div>;
 
-  const isEnabled = status?.enabled;
-  const circuitBroken = status?.state?.is_broken;
+  const isEnabled = status?.config?.is_enabled || config?.is_enabled;
+  const circuitBroken = status?.state?.is_circuit_broken;
   const dailyLoss = status?.state?.daily_loss || 0;
   const totalLoss = status?.state?.total_loss || 0;
   const totalProfit = status?.state?.total_profit || 0;
@@ -467,7 +373,7 @@ export function LiveTradingPanel() {
               <div key={pos.currency} className="holding-card">
                 <div className="holding-header">
                   <span className="holding-currency">{pos.currency}</span>
-                  <span className="holding-usd">${pos.usd_value.toFixed(2)}</span>
+                  <span className="holding-usd">${(pos.usd_value || 0).toFixed(2)}</span>
                 </div>
                 <div className="holding-balance">
                   {pos.balance < 0.0001
@@ -479,7 +385,7 @@ export function LiveTradingPanel() {
                         : pos.balance.toLocaleString(undefined, {maximumFractionDigits: 2})
                   }
                 </div>
-                {pos.usd_value > 0 && pos.currency !== 'USD' && (
+                {pos.usd_value && pos.usd_value > 0 && pos.currency !== 'USD' && (
                   <div className="holding-price">
                     @ ${(pos.usd_value / pos.balance).toFixed(2)}
                   </div>
@@ -577,47 +483,6 @@ export function LiveTradingPanel() {
         </div>
       )}
 
-      {/* Controls */}
-      <div className="live-controls-section">
-        <div className="controls-header">
-          <h2>🔴 Live Trading Controls</h2>
-          <div className="controls-buttons">
-            {!isEnabled ? (
-              <>
-                <button
-                  className="enable-btn"
-                  onClick={() => setShowEnableModal(true)}
-                  disabled={circuitBroken || !rustEngineStatus?.connected}
-                  title={!rustEngineStatus?.connected ? 'Executor offline - cannot place orders' : circuitBroken ? 'Circuit breaker triggered' : 'Start live trading'}
-                >
-                  🟢 START Live Trading
-                </button>
-                {!rustEngineStatus?.connected && (
-                  <span className="executor-warning">⚠️ Executor offline</span>
-                )}
-              </>
-            ) : (
-              <>
-                <button className="disable-btn" onClick={handleDisable}>⏹️ Stop Trading</button>
-                <button className="emergency-btn" onClick={handleEmergencyStop}>🛑 EMERGENCY STOP</button>
-              </>
-            )}
-          </div>
-        </div>
-        <div className="status-grid">
-          <div className={`status-card ${circuitBroken ? 'danger' : 'ok'}`}><span className="status-label">Circuit Breaker</span><span className="status-value">{circuitBroken ? '🛑 TRIGGERED' : '✅ OK'}</span></div>
-          <div className="status-card"><span className="status-label">Execution</span><span className="status-value">⚡ Rust WebSocket</span></div>
-          <div className="status-card"><span className="status-label">Trade Amount</span><span className="status-value">${config?.trade_amount || 10}</span></div>
-          <div className="status-card">
-            <span className="status-label">Fee Tier {krakenFees?.success ? '(Live)' : ''}</span>
-            <span className="status-value">
-              {krakenFees?.success ? `${krakenFees.taker_fee_pct.toFixed(2)}%` : '0.26%'} / leg
-            </span>
-            {krakenFees?.success && <span className="status-detail">30d vol: ${krakenFees['30_day_volume_usd']?.toFixed(0)}</span>}
-          </div>
-        </div>
-      </div>
-
       {/* P&L */}
       <div className="pnl-section">
         <h3>📊 Profit & Loss</h3>
@@ -644,287 +509,6 @@ export function LiveTradingPanel() {
           </div>
         </div>
         <div className="pnl-actions"><button className="reset-btn" onClick={handleResetDaily}>🔄 Reset Daily</button></div>
-      </div>
-
-      {/* Rust Execution Engine Section */}
-      <div className="rust-engine-section">
-        <div className="rust-engine-header">
-          <h3>⚡ Rust Execution Engine</h3>
-          <span className={`engine-status ${rustEngineStatus?.connected ? 'connected' : 'offline'}`}>
-            {rustEngineStatus?.connected ? '● Connected' : '○ Offline'}
-          </span>
-        </div>
-
-        {rustEngineStatus?.connected ? (
-          <div className="rust-engine-grid">
-            <div className="engine-stat">
-              <span className="label">Trades Executed</span>
-              <span className="value">{rustEngineStatus?.stats?.trades_executed || 0}</span>
-            </div>
-            <div className="engine-stat">
-              <span className="label">Success Rate</span>
-              <span className="value positive">
-                {rustEngineStatus?.stats?.success_rate
-                  ? `${(rustEngineStatus.stats.success_rate * 100).toFixed(1)}%`
-                  : '--'}
-              </span>
-            </div>
-            <div className="engine-stat">
-              <span className="label">Avg Latency</span>
-              <span className="value">
-                {rustEngineStatus?.stats?.avg_execution_ms
-                  ? `${rustEngineStatus.stats.avg_execution_ms.toFixed(0)}ms`
-                  : '--'}
-              </span>
-            </div>
-            <div className="engine-stat">
-              <span className="label">Total Profit</span>
-              <span className={`value ${(rustEngineStatus?.stats?.total_profit || 0) >= 0 ? 'positive' : 'negative'}`}>
-                ${(rustEngineStatus?.stats?.total_profit || 0).toFixed(2)}
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="engine-offline-message">
-            <p>Rust execution engine is offline.</p>
-            <p className="engine-setup-note">
-              To enable: Add <code>KRAKEN_API_KEY</code> and <code>KRAKEN_API_SECRET</code> to your .env file.
-            </p>
-            <p className="engine-benefits">The engine provides:</p>
-            <ul>
-              <li>10x faster order execution via WebSocket</li>
-              <li>Parallel leg execution for pre-positioned funds</li>
-              <li>Automatic maker/taker order optimization</li>
-            </ul>
-          </div>
-        )}
-
-        {/* Fee Optimization Section */}
-        <div className="fee-optimization-section">
-          <div className="fee-header" onClick={() => setShowFeeSettings(!showFeeSettings)}>
-            <span className="fee-toggle">{showFeeSettings ? '▼' : '▶'}</span>
-            <h4>💰 Fee Optimization</h4>
-            {feeStats && feeStats.maker_orders_attempted > 0 && (
-              <span className="fee-savings">
-                Saved: ${feeStats.total_fee_savings?.toFixed(2) || '0.00'}
-              </span>
-            )}
-          </div>
-
-          {showFeeSettings && (
-            <div className="fee-settings-content">
-              {feeStats && feeStats.maker_orders_attempted > 0 && (
-                <div className="fee-stats-grid">
-                  <div className="fee-stat">
-                    <span className="label">Maker Orders</span>
-                    <span className="value">{feeStats.maker_orders_filled || 0} / {feeStats.maker_orders_attempted || 0}</span>
-                  </div>
-                  <div className="fee-stat">
-                    <span className="label">Fill Rate</span>
-                    <span className="value">{feeStats.maker_fill_rate?.toFixed(1) || 0}%</span>
-                  </div>
-                  <div className="fee-stat">
-                    <span className="label">Total Saved</span>
-                    <span className="value positive">${feeStats.total_fee_savings?.toFixed(4) || '0.00'}</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Kraken Fee Rates (from your account's actual fee tier) */}
-              <div className="fee-rates-display">
-                <div className="fee-rate-item">
-                  <span className="fee-rate-label">Maker Fee</span>
-                  <span className="fee-rate-value">
-                    {krakenFees?.success ? krakenFees.maker_fee_pct.toFixed(2) : (getFeeConfigValue('maker_fee', 0.0016) * 100).toFixed(2)}%
-                  </span>
-                </div>
-                <div className="fee-rate-item">
-                  <span className="fee-rate-label">Taker Fee</span>
-                  <span className="fee-rate-value">
-                    {krakenFees?.success ? krakenFees.taker_fee_pct.toFixed(2) : (getFeeConfigValue('taker_fee', 0.0026) * 100).toFixed(2)}%
-                  </span>
-                </div>
-                <div className="fee-rate-item highlight">
-                  <span className="fee-rate-label">Potential Savings</span>
-                  <span className="fee-rate-value positive">
-                    {krakenFees?.success ? krakenFees.fee_savings_pct.toFixed(2) : ((getFeeConfigValue('taker_fee', 0.0026) - getFeeConfigValue('maker_fee', 0.0016)) * 100).toFixed(2)}%
-                  </span>
-                </div>
-              </div>
-              {krakenFees?.success && (
-                <div className="kraken-volume-info">
-                  <span className="volume-label">30-Day Volume:</span>
-                  <span className="volume-value">${krakenFees['30_day_volume_usd']?.toLocaleString() || '0'}</span>
-                </div>
-              )}
-              <p className="fee-note">
-                {krakenFees?.success
-                  ? 'Fees fetched from your Kraken account (based on 30-day volume tier).'
-                  : krakenFees?.error
-                    ? `Using defaults - ${krakenFees.error}`
-                    : 'Fee rates are set by Kraken based on your 30-day trading volume.'}
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Configuration */}
-      <div className="config-section">
-        <div className="config-header">
-          <h3>⚙️ Configuration</h3>
-          {hasPendingConfig && <button className="apply-btn" onClick={handleApplyConfig}>✓ Apply Changes</button>}
-        </div>
-        <div className="config-grid">
-          <div className="config-item">
-            <label>Trade Amount</label>
-            <div className="amount-buttons">
-              {PRESET_AMOUNTS.map(amt => (
-                <button key={amt} className={currentTradeAmount === amt ? 'active' : ''} onClick={() => handleConfigChange('trade_amount', amt)}>${amt}</button>
-              ))}
-              {!PRESET_AMOUNTS.includes(currentTradeAmount) && (
-                <button className="active custom-active">${currentTradeAmount}</button>
-              )}
-            </div>
-            <div className="custom-amount-row">
-              <input type="number" placeholder="Custom amount" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleCustomAmountSubmit()} />
-              <button onClick={handleCustomAmountSubmit} className="custom-btn">Set</button>
-            </div>
-          </div>
-          <div className="config-item">
-            <label>Min Profit Threshold</label>
-            <div className="slider-container">
-              <input type="range" min="0.01" max="1" step="0.01" value={currentThreshold * 100} onChange={(e) => handleConfigChange('min_profit_threshold', parseFloat(e.target.value) / 100)} />
-              <span className="slider-value">{(currentThreshold * 100).toFixed(2)}%</span>
-            </div>
-            {thresholdWarning && <div className={`threshold-warning ${thresholdWarning.type}`}>{thresholdWarning.message}</div>}
-          </div>
-          <div className="config-item"><label>Max Daily Loss ($)</label><input type="number" min="10" max="200" value={getConfigValue('max_daily_loss', 30)} onChange={(e) => handleConfigChange('max_daily_loss', parseFloat(e.target.value))} /></div>
-          <div className="config-item"><label>Max Total Loss ($)</label><input type="number" min="10" max="200" value={getConfigValue('max_total_loss', 30)} onChange={(e) => handleConfigChange('max_total_loss', parseFloat(e.target.value))} /></div>
-          {/* Execution mode removed - Rust WebSocket always uses parallel execution */}
-          <div className="config-item">
-            <label>Base Currency</label>
-            <select value={getConfigValue('base_currency', 'USD')} onChange={(e) => handleBaseCurrencyChange(e.target.value)}>
-              <option value="ALL">ALL</option>
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-              <option value="USDT">USDT</option>
-              <option value="BTC">BTC</option>
-              <option value="ETH">ETH</option>
-              <option value="CUSTOM">CUSTOM</option>
-            </select>
-          </div>
-          {/* Max parallel trades removed - Rust handles execution internally */}
-          {showCustomCurrencies && (
-            <div className="config-item full-width">
-              <label>Select Currencies</label>
-              <div className="currency-checkboxes">
-                {AVAILABLE_CURRENCIES.map(curr => (
-                  <label key={curr} className={`checkbox-label ${customCurrencies.includes(curr) ? 'checked' : ''}`}>
-                    <input type="checkbox" checked={customCurrencies.includes(curr)} onChange={() => handleCustomCurrencyToggle(curr)} />
-                    <span className="checkmark"></span>
-                    {curr}
-                  </label>
-                ))}
-              </div>
-              {customCurrencies.length > 0 && <div className="selected-currencies">Selected: {customCurrencies.join(', ')}</div>}
-            </div>
-          )}
-          
-          {/* Execution settings (retries/timeout) removed - Rust WebSocket handles this internally */}
-          
-          {/* Expandable Risks Section */}
-          <div className="config-item full-width">
-            <div className="risks-collapsible" onClick={() => setShowRisks(!showRisks)}>
-              <span className="risks-toggle">{showRisks ? '▼' : '▶'}</span>
-              <span className="risks-title">⚠️ Important Risks & Information</span>
-            </div>
-            
-            {showRisks && (
-              <div className="risks-content">
-                <div className="risk-section">
-                  <h5>1. Partial Trade Risk</h5>
-                  <p>If a leg fails mid-trade (e.g., network error, timeout, insufficient liquidity), you may be left holding a different currency than you started with.</p>
-                  <ul>
-                    <li><strong>Leg 1 fails:</strong> Safe - you keep your original USD</li>
-                    <li><strong>Leg 2 fails:</strong> ⚠️ You hold intermediate currency (e.g., BTC)</li>
-                    <li><strong>Leg 3 fails:</strong> ⚠️ You hold intermediate currency (e.g., ETH)</li>
-                  </ul>
-                  <p className="action-note">Monitor <strong>PARTIAL</strong> trades and manually sell any stuck positions back to USD.</p>
-                </div>
-                
-                <div className="risk-section">
-                  <h5>2. Slippage</h5>
-                  <p>Actual execution price may differ from expected price, reducing or eliminating profits. Market orders fill at best available price, which may move between order placement and execution.</p>
-                </div>
-                
-                <div className="risk-section">
-                  <h5>3. Trading Fees</h5>
-                  <p>Each trade incurs ~{krakenFees?.success ? krakenFees.taker_fee_pct.toFixed(2) : '0.26'}% taker fee per leg (~{krakenFees?.success ? (krakenFees.taker_fee_pct * 3).toFixed(2) : '0.78'}% total for 3-leg arbitrage). Fees are deducted from your balance and reduce overall profitability.</p>
-                </div>
-                
-                <div className="risk-section">
-                  <h5>4. Retries & Timeout</h5>
-                  <p>If an order fails, the system will retry up to the configured number of times. If an order doesn't fill within the timeout period, it will be cancelled and counted as a failed attempt.</p>
-                </div>
-                
-                <div className="risk-section">
-                  <h5>5. Circuit Breaker</h5>
-                  <p>Trading automatically stops when daily or total loss limits are reached. Daily losses reset at midnight UTC. You can manually reset the circuit breaker after reviewing your positions.</p>
-                </div>
-                
-                <div className="risk-section">
-                  <h5>6. Parallel Trading Risks</h5>
-                  <p>When running multiple trades in parallel mode:</p>
-                  <ul>
-                    <li><strong>Slippage cascade:</strong> Each trade makes the price worse for the next trade</li>
-                    <li><strong>Balance required:</strong> 5 trades × $10 = $50 minimum balance needed</li>
-                    <li><strong>Tracking complexity:</strong> Multiple failures harder to diagnose</li>
-                    <li><strong>Circuit breaker delay:</strong> Multiple losing trades may execute before limits are checked</li>
-                  </ul>
-                  <p className="action-note">Recommendation: Start with 1 parallel trade until you understand the system behavior.</p>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Scanner Status */}
-      <div className="scanner-section">
-        <h3>📡 Scanner Status</h3>
-        <div className="scanner-grid">
-          <div className="scanner-card">
-            <span className="scanner-label">Status</span>
-            <span className={`scanner-value ${scannerStatus?.is_running ? 'running' : 'stopped'}`}>
-              {scannerStatus?.is_running ? '🟢 Running' : '⚪ Stopped'}
-            </span>
-          </div>
-          <div className="scanner-card">
-            <span className="scanner-label">Pairs Scanned</span>
-            <span className="scanner-value">{scannerStatus?.pairs_scanned || 0}</span>
-          </div>
-          <div className="scanner-card">
-            <span className="scanner-label">Paths Found</span>
-            <span className="scanner-value">{scannerStatus?.paths_found || 0}</span>
-          </div>
-          <div className="scanner-card">
-            <span className="scanner-label">Opportunities</span>
-            <span className="scanner-value">{scannerStatus?.opportunities_found || 0}</span>
-          </div>
-          <div className="scanner-card">
-            <span className="scanner-label">Above Threshold</span>
-            <span className="scanner-value highlight">{scannerStatus?.profitable_count || 0}</span>
-          </div>
-          <div className="scanner-card">
-            <span className="scanner-label">Last Scan</span>
-            <span className="scanner-value">
-              {scannerStatus?.seconds_ago != null 
-                ? `${Math.round(scannerStatus.seconds_ago)}s ago` 
-                : '--'}
-            </span>
-          </div>
-        </div>
       </div>
 
       {/* Live Trades Table */}
@@ -1139,46 +723,6 @@ export function LiveTradingPanel() {
           </>
         )}
       </div>
-
-      {/* Enable Modal */}
-      {showEnableModal && (
-        <div className="modal-overlay">
-          <div className="enable-modal">
-            <h2>⚠️ START LIVE TRADING</h2>
-
-            {/* Executor Status Check */}
-            <div className={`executor-status-check ${rustEngineStatus?.connected ? 'ready' : 'offline'}`}>
-              <span className="status-icon">{rustEngineStatus?.connected ? '✅' : '❌'}</span>
-              <span className="status-text">
-                {rustEngineStatus?.connected
-                  ? 'Executor Ready - Connected to Kraken'
-                  : 'Executor Offline - Cannot place orders'}
-              </span>
-            </div>
-
-            <div className="config-summary">
-              <h4>Current Settings:</h4>
-              <div className="config-row"><span className="config-label">Trade Amount</span><span className="config-value">${config?.trade_amount || 10} per trade</span></div>
-              <div className="config-row"><span className="config-label">Min Profit Threshold</span><span className="config-value">{((config?.min_profit_threshold || 0.003) * 100).toFixed(2)}%</span></div>
-              <div className="config-row"><span className="config-label">Max Daily Loss</span><span className="config-value">${config?.max_daily_loss || 30}</span></div>
-              <div className="config-row"><span className="config-label">Max Total Loss</span><span className="config-value highlight-red">${config?.max_total_loss || 30}</span></div>
-              <div className="config-row"><span className="config-label">Execution</span><span className="config-value">⚡ Rust WebSocket (~50ms)</span></div>
-              <div className="config-row"><span className="config-label">Base Currency</span><span className="config-value">{config?.base_currency || 'USD'}</span></div>
-            </div>
-
-            <div className="modal-buttons">
-              <button className="cancel-btn" onClick={() => setShowEnableModal(false)}>Cancel</button>
-              <button
-                className="confirm-btn"
-                onClick={handleEnable}
-                disabled={!rustEngineStatus?.connected}
-              >
-                {rustEngineStatus?.connected ? '✓ Start Live Trading' : '⚠️ Executor Offline'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Resolve Partial Trade Modal */}
       {showResolveModal && resolvePreview && (

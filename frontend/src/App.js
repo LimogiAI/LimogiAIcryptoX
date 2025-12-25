@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { StatusBar } from './components/StatusBar';
+import { ConfigBar } from './components/ConfigBar';
 import { OpportunitiesPanel } from './components/OpportunitiesPanel';
 import { PriceMatrix } from './components/PriceMatrix';
 import { OrderBookHealthPanel } from './components/OrderBookHealthPanel';
@@ -128,7 +129,8 @@ function App() {
         </div>
       )}
 
-      <StatusBar status={status} />
+      <StatusBar status={status} connected={connected} />
+      <ConfigBar />
 
       <div className="tabs">
         <button

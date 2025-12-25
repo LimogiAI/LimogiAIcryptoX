@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../services/api';
 
-export function StatusBar({ status }) {
+export function StatusBar({ status, connected }) {
   const [uptimeSeconds, setUptimeSeconds] = useState(0);
   const [engineSettings, setEngineSettings] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -12,22 +12,36 @@ export function StatusBar({ status }) {
 
   // Rust execution engine stats
   const [executionStats, setExecutionStats] = useState(null);
-  const [feeStats, setFeeStats] = useState(null);
+  const [scannerStatus, setScannerStatus] = useState(null);
+  const [lastScanSeconds, setLastScanSeconds] = useState(null);
 
   const COOLDOWN_DURATION = 30;
 
+  // Reset state when disconnected
   useEffect(() => {
-    if (status?.uptime_seconds) {
-      setUptimeSeconds(status.uptime_seconds);
+    if (!connected) {
+      setExecutionStats(null);
+      setScannerStatus(null);
+      setLastScanSeconds(null);
+      setUptimeSeconds(0);
     }
-  }, [status?.uptime_seconds]);
+  }, [connected]);
 
   useEffect(() => {
+    if (status?.uptime_seconds && connected) {
+      setUptimeSeconds(status.uptime_seconds);
+    }
+  }, [status?.uptime_seconds, connected]);
+
+  useEffect(() => {
+    // Only count uptime when connected
+    if (!connected) return;
+    
     const interval = setInterval(() => {
       setUptimeSeconds(prev => prev + 1);
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [connected]);
 
   useEffect(() => {
     if (cooldownSeconds > 0) {
@@ -39,34 +53,67 @@ export function StatusBar({ status }) {
   }, [cooldownSeconds]);
 
   const fetchSettings = useCallback(async () => {
+    if (!connected) return;
     try {
       const data = await api.getEngineSettings();
       setEngineSettings(data);
     } catch (err) {
       console.error('Failed to fetch engine settings:', err);
     }
-  }, []);
+  }, [connected]);
 
   const fetchExecutionStats = useCallback(async () => {
+    if (!connected) return;
     try {
-      const [execStatus, feeData] = await Promise.all([
-        api.getRustExecutionEngineStatus().catch(() => null),
-        api.getFeeStats().catch(() => null),
+      const [statusData, scannerData] = await Promise.all([
+        api.getStatus().catch(() => null),
+        api.getLiveScannerStatus().catch(() => null),
       ]);
-      setExecutionStats(execStatus);
-      setFeeStats(feeData);
+      
+      // Set execution stats from status - connected if engine is running
+      if (statusData) {
+        setExecutionStats({
+          connected: statusData.is_running || false,
+          stats: {
+            trades_executed: 0,
+            avg_execution_ms: null,
+          }
+        });
+      } else {
+        setExecutionStats(null);
+      }
+      
+      // Set scanner status and calculate seconds ago
+      if (scannerData?.data) {
+        setScannerStatus(scannerData.data);
+        if (scannerData.data.last_scan_at) {
+          const lastScanTime = new Date(scannerData.data.last_scan_at);
+          const secondsAgo = Math.floor((Date.now() - lastScanTime.getTime()) / 1000);
+          setLastScanSeconds(secondsAgo >= 0 ? secondsAgo : null);
+        } else {
+          setLastScanSeconds(null);
+        }
+      } else {
+        setScannerStatus(null);
+        setLastScanSeconds(null);
+      }
     } catch (err) {
-      // Silently fail - execution engine may not be initialized
+      // On error, clear the stats
+      setExecutionStats(null);
+      setScannerStatus(null);
+      setLastScanSeconds(null);
     }
-  }, []);
+  }, [connected]);
 
   useEffect(() => {
-    fetchSettings();
-    fetchExecutionStats();
+    if (connected) {
+      fetchSettings();
+      fetchExecutionStats();
+    }
     // Refresh execution stats every 10 seconds
     const interval = setInterval(fetchExecutionStats, 10000);
     return () => clearInterval(interval);
-  }, [fetchSettings, fetchExecutionStats]);
+  }, [fetchSettings, fetchExecutionStats, connected]);
 
   if (!status) return null;
 
@@ -143,73 +190,52 @@ export function StatusBar({ status }) {
 
   const hasPendingChanges = Object.keys(pendingChanges).length > 0;
   const scannerEnabled = getCurrentValue('scanner_enabled') ?? true;
+  const isOnline = connected && status?.is_running;
 
   return (
     <div className="status-bar-container">
       <div className="status-bar">
         <div className="status-item">
           <span className="status-label">Scanner</span>
-          <span className={'status-value ' + (status.is_running && scannerEnabled ? 'running' : 'stopped')}>
-            {status.is_running && scannerEnabled ? '● Active' : '○ Stopped'}
+          <span className={'status-value ' + (isOnline && scannerEnabled ? 'running' : 'stopped')}>
+            {!connected ? '○ Offline' : (isOnline && scannerEnabled ? '● Active' : '○ Stopped')}
           </span>
           <span className="status-note">(prices)</span>
         </div>
         
         <div className="status-item">
           <span className="status-label">Pairs</span>
-          <span className="status-value">{status.pairs_monitored || 0}</span>
+          <span className="status-value">{connected ? (status?.pairs_monitored || 0) : '--'}</span>
           <span className="status-note">(top volume)</span>
         </div>
 
         <div className="status-item">
           <span className="status-label">Depth</span>
-          <span className="status-value">{getCurrentValue('orderbook_depth') || 25}</span>
+          <span className="status-value">{connected ? (getCurrentValue('orderbook_depth') || 25) : '--'}</span>
           <span className="status-note">(levels)</span>
         </div>
-        
+
         <div className="status-item">
-          <span className="status-label">Uptime</span>
-          <span className="status-value uptime">{formatUptime(uptimeSeconds)}</span>
+          <span className="status-label">Last Scan</span>
+          <span className="status-value">
+            {connected && lastScanSeconds != null ? `${lastScanSeconds}s ago` : '--'}
+          </span>
         </div>
 
         {/* Rust Execution Engine Status (Private WebSocket for order execution) */}
-        {executionStats && (
-          <>
-            <div className="status-divider"></div>
-            <div className="status-item">
-              <span className="status-label">Executor</span>
-              <span className={'status-value ' + (executionStats.connected ? 'running' : 'stopped')}>
-                {executionStats.connected ? '● Ready' : '○ Offline'}
-              </span>
-              <span className="status-note">(orders)</span>
-            </div>
-            {executionStats.connected && (
-              <>
-                <div className="status-item">
-                  <span className="status-label">Trades</span>
-                  <span className="status-value">{executionStats.stats?.trades_executed || 0}</span>
-                </div>
-                <div className="status-item">
-                  <span className="status-label">Avg Latency</span>
-                  <span className="status-value">
-                    {executionStats.stats?.avg_execution_ms
-                      ? `${executionStats.stats.avg_execution_ms.toFixed(0)}ms`
-                      : '--'}
-                  </span>
-                </div>
-              </>
-            )}
-          </>
-        )}
+        <div className="status-divider"></div>
+        <div className="status-item">
+          <span className="status-label">Executor</span>
+          <span className={'status-value ' + (connected && executionStats?.connected ? 'running' : 'stopped')}>
+            {!connected ? '○ Offline' : (executionStats?.connected ? '● Ready' : '○ Offline')}
+          </span>
+          <span className="status-note">(orders)</span>
+        </div>
 
-        {/* Fee Optimization Stats */}
-        {feeStats && feeStats.maker_orders_attempted > 0 && (
-          <div className="status-item">
-            <span className="status-label">Fee Saved</span>
-            <span className="status-value positive">${feeStats.total_fee_savings?.toFixed(2) || '0.00'}</span>
-            <span className="status-note">({feeStats.maker_fill_rate?.toFixed(0) || 0}% maker)</span>
-          </div>
-        )}
+        <div className="status-item">
+          <span className="status-label">Uptime</span>
+          <span className="status-value uptime">{connected ? formatUptime(uptimeSeconds) : '--'}</span>
+        </div>
 
         <button
           className={'settings-toggle-btn ' + (showSettings ? 'active' : '')}
@@ -220,7 +246,7 @@ export function StatusBar({ status }) {
         </button>
       </div>
 
-      {showSettings && (
+      {showSettings && connected && (
         <div className="engine-settings-panel">
           <div className="settings-header">
             <h4>⚙️ Engine Settings</h4>

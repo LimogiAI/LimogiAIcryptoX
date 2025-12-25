@@ -14,7 +14,7 @@ export function Header({ connected }) {
       <div className="header-right">
         <div className={`connection-status ${connected ? 'connected' : 'disconnected'}`}>
           <span className="status-dot"></span>
-          <span>{connected ? 'Live' : 'Offline'}</span>
+          <span>{connected ? 'Online' : 'Offline'}</span>
         </div>
       </div>
     </header>

@@ -19,7 +19,17 @@ export function OpportunitiesPanel({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [liveRefreshing, setLiveRefreshing] = useState(false);
   const [historyPage, setHistoryPage] = useState(1);
+  const [livePage, setLivePage] = useState(1);
+  const [expandedLiveRows, setExpandedLiveRows] = useState({});
   const historyPerPage = 50;
+  const livePerPage = 50;
+
+  const toggleLiveRow = (id) => {
+    setExpandedLiveRows(prev => ({
+      ...prev,
+      [id]: !prev[id]
+    }));
+  };
 
   const handleLiveRefresh = async () => {
     setLiveRefreshing(true);
@@ -29,6 +39,23 @@ export function OpportunitiesPanel({
       setTimeout(() => setLiveRefreshing(false), 500); // Show spinner briefly
     }
   };
+
+  // Filter to only profitable opportunities
+  const profitableOpportunities = opportunities?.filter(opp => opp.is_profitable) || [];
+  
+  // Pagination for live opportunities
+  const totalLivePages = Math.ceil(profitableOpportunities.length / livePerPage);
+  const paginatedLiveOpportunities = profitableOpportunities.slice(
+    (livePage - 1) * livePerPage,
+    livePage * livePerPage
+  );
+
+  // Reset page when opportunities change significantly
+  useEffect(() => {
+    if (livePage > totalLivePages && totalLivePages > 0) {
+      setLivePage(1);
+    }
+  }, [livePage, totalLivePages]);
 
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -54,13 +81,21 @@ export function OpportunitiesPanel({
   }, [activeSubTab, fetchHistory]);
   
   const formatTime = (timestamp) => {
-    if (!timestamp) return '--';
+    if (!timestamp && timestamp !== 0) return '--';
     try {
-      let ts = timestamp;
-      if (!timestamp.endsWith('Z') && !timestamp.includes('+')) {
-        ts = timestamp + 'Z';
+      let date;
+      // Handle milliseconds timestamp (number)
+      if (typeof timestamp === 'number') {
+        date = new Date(timestamp);
+      } else {
+        // Handle string timestamp
+        let ts = timestamp;
+        if (!timestamp.endsWith('Z') && !timestamp.includes('+')) {
+          ts = timestamp + 'Z';
+        }
+        date = new Date(ts);
       }
-      const date = new Date(ts);
+      if (isNaN(date.getTime())) return '--';
       return date.toLocaleTimeString('en-US', {
         timeZone: 'America/New_York',
         hour: '2-digit',
@@ -74,13 +109,21 @@ export function OpportunitiesPanel({
   };
 
   const formatDateTime = (timestamp) => {
-    if (!timestamp) return '--';
+    if (!timestamp && timestamp !== 0) return '--';
     try {
-      let ts = timestamp;
-      if (!timestamp.endsWith('Z') && !timestamp.includes('+')) {
-        ts = timestamp + 'Z';
+      let date;
+      // Handle milliseconds timestamp (number)
+      if (typeof timestamp === 'number') {
+        date = new Date(timestamp);
+      } else {
+        // Handle string timestamp
+        let ts = timestamp;
+        if (!timestamp.endsWith('Z') && !timestamp.includes('+')) {
+          ts = timestamp + 'Z';
+        }
+        date = new Date(ts);
       }
-      const date = new Date(ts);
+      if (isNaN(date.getTime())) return '--';
       return date.toLocaleString('en-US', {
         timeZone: 'America/New_York',
         month: 'short',
@@ -156,16 +199,18 @@ export function OpportunitiesPanel({
               <div className="filter-group">
                 <label>Time Range:</label>
                 <select 
-                  value={minutesAgo || 5} 
+                  value={minutesAgo || 60} 
                   onChange={(e) => setMinutesAgo(parseInt(e.target.value))}
                   className="filter-select"
                 >
-                  <option value={1}>Last 1 min</option>
-                  <option value={2}>Last 2 min</option>
                   <option value={5}>Last 5 min</option>
-                  <option value={10}>Last 10 min</option>
+                  <option value={15}>Last 15 min</option>
                   <option value={30}>Last 30 min</option>
                   <option value={60}>Last 1 hour</option>
+                  <option value={360}>Last 6 hours</option>
+                  <option value={1440}>Last 24 hours</option>
+                  <option value={10080}>Last 7 days</option>
+                  <option value={0}>All Time</option>
                 </select>
               </div>
               
@@ -195,10 +240,10 @@ export function OpportunitiesPanel({
             </div>
           </div>
 
-          {(!opportunities || opportunities.length === 0) ? (
+          {profitableOpportunities.length === 0 ? (
             <div className="empty-state">
-              <p>No opportunities found.</p>
-              <p className="hint">Try changing filters or wait for scanner...</p>
+              <p>No profitable opportunities found.</p>
+              <p className="hint">Scanner is looking for arbitrage... {opportunities?.length > 0 ? `(${opportunities.length} total, none profitable)` : ''}</p>
             </div>
           ) : (
             <>
@@ -206,6 +251,7 @@ export function OpportunitiesPanel({
                 <table className="opportunities-table">
                   <thead>
                     <tr>
+                      <th></th>
                       <th>Time (EST)</th>
                       <th>Path</th>
                       <th>Legs</th>
@@ -217,46 +263,164 @@ export function OpportunitiesPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {opportunities.map((opp, idx) => (
-                      <tr 
-                        key={opp.id || idx} 
-                        className={opp.is_profitable ? 'profitable' : 'unprofitable'}
-                      >
-                        <td className="time">{formatTime(opp.detected_at)}</td>
-                        <td className="path">
-                          <code>{opp.path || '--'}</code>
-                        </td>
-                        <td className="legs">{opp.legs || '--'}</td>
-                        <td className="gross">
-                          {formatProfit(opp.gross_profit_pct)}
-                        </td>
-                        <td className="fees">
-                          {formatFees(opp.fees_pct)}
-                        </td>
-                        <td className={`net ${opp.is_profitable ? 'positive' : 'negative'}`}>
-                          {formatProfit(opp.net_profit_pct)}
-                        </td>
-                        <td className={`amount ${opp.is_profitable ? 'positive' : 'negative'}`}>
-                          {formatAmount(opp.profit_amount)}
-                        </td>
-                        <td className="status">
-                          {opp.is_profitable ? (
-                            <span className="badge profitable">✓ Profitable</span>
-                          ) : (
-                            <span className="badge unprofitable">✗ Loss</span>
+                    {paginatedLiveOpportunities.map((opp, idx) => {
+                      const rowId = opp.id || idx;
+                      const isExpanded = expandedLiveRows[rowId];
+                      const hasPriceSnapshot = opp.prices_snapshot && opp.prices_snapshot.legs;
+                      
+                      return (
+                        <React.Fragment key={rowId}>
+                          <tr 
+                            className={`${opp.is_profitable ? 'profitable' : 'unprofitable'} ${hasPriceSnapshot ? 'expandable' : ''}`}
+                            onClick={() => hasPriceSnapshot && toggleLiveRow(rowId)}
+                            style={{ cursor: hasPriceSnapshot ? 'pointer' : 'default' }}
+                          >
+                            <td className="expand-toggle">
+                              {hasPriceSnapshot ? (isExpanded ? '▼' : '▶') : ''}
+                            </td>
+                            <td className="time">{formatTime(opp.detected_at)}</td>
+                            <td className="path">
+                              <code>{opp.path || '--'}</code>
+                              {opp.source === 'history' && <span className="source-badge">saved</span>}
+                            </td>
+                            <td className="legs">{opp.legs || '--'}</td>
+                            <td className="gross">
+                              {formatProfit(opp.gross_profit_pct)}
+                            </td>
+                            <td className="fees">
+                              {formatFees(opp.fees_pct)}
+                            </td>
+                            <td className={`net ${opp.is_profitable ? 'positive' : 'negative'}`}>
+                              {formatProfit(opp.net_profit_pct)}
+                            </td>
+                            <td className={`amount ${opp.is_profitable ? 'positive' : 'negative'}`}>
+                              {formatAmount(opp.profit_amount)}
+                            </td>
+                            <td className="status">
+                              {opp.is_profitable ? (
+                                <span className="badge profitable">✓ Profitable</span>
+                              ) : (
+                                <span className="badge unprofitable">✗ Loss</span>
+                              )}
+                            </td>
+                          </tr>
+                          {isExpanded && hasPriceSnapshot && (
+                            <tr className="expanded-details">
+                              <td colSpan="9">
+                                <div className="leg-details">
+                                  <div className="leg-details-header">
+                                    <h4>Leg Details (Snapshot at Detection)</h4>
+                                    <span className="snapshot-fee">
+                                      Fee Rate: <strong>{(opp.prices_snapshot.fee_rate * 100).toFixed(2)}%</strong> per leg
+                                      <span className={`fee-badge ${opp.prices_snapshot.fee_source}`}>
+                                        {opp.prices_snapshot.fee_source}
+                                      </span>
+                                      <span className="calc-basis">(calculated for $1.00)</span>
+                                    </span>
+                                  </div>
+                                  <table className="leg-table">
+                                    <thead>
+                                      <tr>
+                                        <th>LEG</th>
+                                        <th>PAIR</th>
+                                        <th>ACTION</th>
+                                        <th>EXPECTED PRICE</th>
+                                        <th>FEE %</th>
+                                        <th>FEE (USD)</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(() => {
+                                        const feeRate = opp.prices_snapshot.fee_rate;
+                                        let runningValue = 1.0;
+                                        
+                                        return opp.prices_snapshot.legs.map((leg, legIdx) => {
+                                          const feeUsd = runningValue * feeRate;
+                                          runningValue = runningValue * (1 - feeRate);
+                                          
+                                          return (
+                                            <tr key={legIdx}>
+                                              <td className="leg-num">{legIdx + 1}</td>
+                                              <td className="leg-pair">{leg.pair}</td>
+                                              <td className={`leg-side ${leg.action}`}>{leg.action.toUpperCase()}</td>
+                                              <td className="leg-price">{leg.rate.toFixed(8)}</td>
+                                              <td className="leg-fee-pct negative">-{(feeRate * 100).toFixed(2)}%</td>
+                                              <td className="leg-fee-usd negative">-${feeUsd.toFixed(6)}</td>
+                                            </tr>
+                                          );
+                                        });
+                                      })()}
+                                    </tbody>
+                                    <tfoot>
+                                      <tr className="total-row">
+                                        <td colSpan="4" className="total-label">TOTAL FEES ({opp.prices_snapshot.legs.length} legs)</td>
+                                        <td className="leg-fee-pct negative">-{(opp.prices_snapshot.fee_rate * 100 * opp.prices_snapshot.legs.length).toFixed(2)}%</td>
+                                        <td className="leg-fee-usd negative">
+                                          -${((() => {
+                                            let runningValue = 1.0;
+                                            let totalFees = 0;
+                                            const feeRate = opp.prices_snapshot.fee_rate;
+                                            opp.prices_snapshot.legs.forEach(() => {
+                                              totalFees += runningValue * feeRate;
+                                              runningValue = runningValue * (1 - feeRate);
+                                            });
+                                            return totalFees;
+                                          })()).toFixed(6)}
+                                        </td>
+                                      </tr>
+                                    </tfoot>
+                                  </table>
+                                </div>
+                              </td>
+                            </tr>
                           )}
-                        </td>
-                      </tr>
-                    ))}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
 
               <div className="panel-footer">
-                <span>Showing {opportunities.length} opportunities</span>
+                <span>Showing {paginatedLiveOpportunities.length} of {profitableOpportunities.length} profitable opportunities</span>
+                
+                {totalLivePages > 1 && (
+                  <div className="pagination">
+                    <button 
+                      onClick={() => setLivePage(1)} 
+                      disabled={livePage === 1}
+                      className="page-btn"
+                    >
+                      ««
+                    </button>
+                    <button 
+                      onClick={() => setLivePage(p => Math.max(1, p - 1))} 
+                      disabled={livePage === 1}
+                      className="page-btn"
+                    >
+                      «
+                    </button>
+                    <span className="page-info">Page {livePage} of {totalLivePages}</span>
+                    <button 
+                      onClick={() => setLivePage(p => Math.min(totalLivePages, p + 1))} 
+                      disabled={livePage === totalLivePages}
+                      className="page-btn"
+                    >
+                      »
+                    </button>
+                    <button 
+                      onClick={() => setLivePage(totalLivePages)} 
+                      disabled={livePage === totalLivePages}
+                      className="page-btn"
+                    >
+                      »»
+                    </button>
+                  </div>
+                )}
+                
                 <span className="filter-info">
                   {sortBy === 'profit' ? '(sorted by profit)' : '(sorted by time)'}
-                  {minutesAgo > 0 ? ` • Last ${minutesAgo} min` : ' • All time'}
+                  {minutesAgo > 0 ? ` • Last ${minutesAgo >= 60 ? `${Math.floor(minutesAgo/60)} hour${minutesAgo >= 120 ? 's' : ''}` : `${minutesAgo} min`}` : ' • All time'}
                   {baseCurrency !== 'ALL' ? ` • ${baseCurrency} only` : ''}
                 </span>
               </div>
@@ -653,6 +817,217 @@ export function OpportunitiesPanel({
 
         .refresh-btn:disabled {
           cursor: wait;
+        }
+
+        /* Expandable rows for Live Opportunities */
+        .opportunities-table .expand-toggle {
+          width: 30px;
+          text-align: center;
+          color: #00d4aa;
+          font-size: 0.8rem;
+        }
+
+        .opportunities-table tr.expandable:hover {
+          background: rgba(0, 212, 170, 0.1);
+        }
+
+        .source-badge {
+          margin-left: 8px;
+          padding: 2px 6px;
+          background: rgba(108, 92, 231, 0.3);
+          color: #a29bfe;
+          border-radius: 4px;
+          font-size: 0.7rem;
+          font-weight: 500;
+        }
+
+        .opportunities-table .expanded-details {
+          background: #1a1a2e;
+        }
+
+        .opportunities-table .expanded-details td {
+          padding: 0;
+        }
+
+        .opportunities-table .leg-details {
+          padding: 15px 20px;
+          border-left: 3px solid #00d4aa;
+          margin-left: 30px;
+        }
+
+        .opportunities-table .leg-details-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+
+        .opportunities-table .leg-details h4 {
+          color: #00d4aa;
+          font-size: 0.9rem;
+          margin: 0;
+        }
+
+        .opportunities-table .snapshot-fee {
+          color: #888;
+          font-size: 0.85rem;
+        }
+
+        .opportunities-table .snapshot-fee strong {
+          color: #fff;
+        }
+
+        .opportunities-table .leg-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.85rem;
+        }
+
+        .opportunities-table .leg-table th {
+          text-align: left;
+          padding: 8px 12px;
+          color: #00d4aa;
+          font-weight: 600;
+          font-size: 0.75rem;
+          border-bottom: 1px solid #2a2a4a;
+        }
+
+        .opportunities-table .leg-table td {
+          padding: 10px 12px;
+          border-bottom: 1px solid #252542;
+        }
+
+        .opportunities-table .leg-table tr:last-child td {
+          border-bottom: none;
+        }
+
+        .opportunities-table .leg-num {
+          color: #00d4aa;
+          font-weight: 600;
+        }
+
+        .opportunities-table .leg-pair {
+          color: #fff;
+          font-family: monospace;
+          font-weight: 500;
+        }
+
+        .opportunities-table .leg-side {
+          padding: 3px 10px;
+          border-radius: 4px;
+          font-size: 0.75rem;
+          font-weight: 600;
+          display: inline-block;
+        }
+
+        .opportunities-table .leg-side.buy {
+          background: rgba(0, 212, 170, 0.2);
+          color: #00d4aa;
+        }
+
+        .opportunities-table .leg-side.sell {
+          background: rgba(255, 107, 107, 0.2);
+          color: #ff6b6b;
+        }
+
+        .opportunities-table .leg-price {
+          color: #e0e0e0;
+          font-family: monospace;
+        }
+
+        .opportunities-table .leg-fee-pct,
+        .opportunities-table .leg-fee-usd {
+          color: #ff6b6b;
+        }
+
+        .opportunities-table .leg-fee-usd {
+          font-family: monospace;
+        }
+
+        .opportunities-table .calc-basis {
+          color: #888;
+          font-size: 0.75rem;
+          margin-left: 8px;
+        }
+
+        .opportunities-table .leg-table tfoot {
+          border-top: 2px solid #00d4aa;
+        }
+
+        .opportunities-table .leg-table tfoot .total-row {
+          background: rgba(0, 212, 170, 0.1);
+        }
+
+        .opportunities-table .leg-table tfoot .total-label {
+          font-weight: 600;
+          color: #00d4aa;
+          text-align: right;
+          padding-right: 20px;
+        }
+
+        .opportunities-table .leg-table tfoot td {
+          padding: 12px;
+          font-weight: 600;
+        }
+
+        .opportunities-table .fee-badge {
+          margin-left: 8px;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-size: 0.75rem;
+          font-weight: 500;
+        }
+
+        .opportunities-table .fee-badge.live {
+          background: rgba(0, 212, 170, 0.2);
+          color: #00d4aa;
+        }
+
+        .opportunities-table .fee-badge.default {
+          background: rgba(255, 193, 7, 0.2);
+          color: #ffc107;
+        }
+
+        /* Pagination */
+        .pagination {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .page-btn {
+          background: linear-gradient(135deg, #2a2a4a, #3a3a5a);
+          border: 1px solid #4a4a6a;
+          color: #fff;
+          padding: 6px 12px;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 0.85rem;
+          transition: all 0.2s;
+        }
+
+        .page-btn:hover:not(:disabled) {
+          background: linear-gradient(135deg, #3a3a5a, #4a4a6a);
+          border-color: #6c5ce7;
+        }
+
+        .page-btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+
+        .page-info {
+          color: #a0a0b0;
+          font-size: 0.85rem;
+          padding: 0 8px;
+        }
+
+        .panel-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 12px;
         }
       `}</style>
     </div>

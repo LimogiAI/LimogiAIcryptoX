@@ -215,10 +215,17 @@ export function LiveTradeHistoryPanel() {
 
   // Format timestamp
   const formatTime = (timestamp) => {
-    if (!timestamp) return '--';
+    if (!timestamp && timestamp !== 0) return '--';
     try {
-      let ts = timestamp.endsWith('Z') || timestamp.includes('+') ? timestamp : timestamp + 'Z';
-      return new Date(ts).toLocaleString('en-US', {
+      let date;
+      if (typeof timestamp === 'number') {
+        date = new Date(timestamp);
+      } else {
+        let ts = timestamp.endsWith('Z') || timestamp.includes('+') ? timestamp : timestamp + 'Z';
+        date = new Date(ts);
+      }
+      if (isNaN(date.getTime())) return '--';
+      return date.toLocaleString('en-US', {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
