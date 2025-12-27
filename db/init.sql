@@ -130,26 +130,12 @@ CREATE TABLE scanner_stats (
 );
 
 -- ============================================
--- TABLE: system_config
--- Runtime configuration
+-- NOTE: system_config table REMOVED
+-- All configuration now comes from:
+-- - User input via dashboard (live_trading_config table)
+-- - Kraken API (fee_configuration table)
+-- - No hardcoded defaults allowed
 -- ============================================
-CREATE TABLE system_config (
-    key VARCHAR(100) PRIMARY KEY,
-    value TEXT NOT NULL,
-    description TEXT,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Insert default configuration
-INSERT INTO system_config (key, value, description) VALUES
-    ('fee_rate_taker', '0.0026', 'Kraken taker fee rate (0.26%)'),
-    ('fee_rate_maker', '0.0016', 'Kraken maker fee rate (0.16%)'),
-    ('min_profit_threshold', '0.001', 'Minimum profit % to log (0.1%)'),
-    ('alert_profit_threshold', '0.003', 'Profit % to trigger alert (0.3%)'),
-    ('max_path_legs', '4', 'Maximum legs in arbitrage path'),
-    ('min_pair_volume_24h', '500000', 'Minimum 24h volume to consider pair ($)'),
-    ('scan_interval_ms', '1000', 'Milliseconds between full scans'),
-    ('base_trade_amount', '10000', 'Base amount for profit calculations ($)');
 
 -- ============================================
 -- VIEW: latest_prices

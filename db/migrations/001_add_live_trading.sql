@@ -6,33 +6,42 @@
 -- ============================================
 -- TABLE: live_trading_config
 -- User-configurable settings (stored in DB, not env)
+-- NO DEFAULT VALUES - User MUST configure all fields
 -- ============================================
 CREATE TABLE IF NOT EXISTS live_trading_config (
     id SERIAL PRIMARY KEY,
-    
-    -- Enable/disable
+
+    -- Enable/disable (starts disabled, user must configure first)
     is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    
-    -- Trade parameters (user-selectable)
-    trade_amount FLOAT NOT NULL DEFAULT 10.0,
-    min_profit_threshold FLOAT NOT NULL DEFAULT 0.003,  -- 0.3%
-    
-    -- Loss limits (user-configurable)
-    max_daily_loss FLOAT NOT NULL DEFAULT 30.0,
-    max_total_loss FLOAT NOT NULL DEFAULT 30.0,
-    
-    -- Execution mode
-    execution_mode VARCHAR(20) NOT NULL DEFAULT 'sequential',  -- 'sequential' or 'parallel'
+
+    -- Trade parameters (REQUIRED - user must configure)
+    trade_amount FLOAT,                        -- No default, user must set
+    min_profit_threshold FLOAT,                -- No default, user must set (as decimal, e.g., 0.003 = 0.3%)
+
+    -- Loss limits (REQUIRED - user must configure)
+    max_daily_loss FLOAT,                      -- No default, user must set
+    max_total_loss FLOAT,                      -- No default, user must set
+
+    -- Execution mode (hardcoded to sequential for safety)
+    execution_mode VARCHAR(20) NOT NULL DEFAULT 'sequential',
     max_parallel_trades INT NOT NULL DEFAULT 1,
-    
-    -- Order execution settings
+
+    -- Order execution settings (system settings, not user-configurable)
     max_retries_per_leg INT NOT NULL DEFAULT 2,
     order_timeout_seconds INT NOT NULL DEFAULT 30,
-    
-    -- Base currency filter (same as paper trading)
-    base_currency VARCHAR(20) NOT NULL DEFAULT 'USD',
+
+    -- Start currency - the currency user starts/ends arbitrage with (USD, EUR, or ALL)
+    -- This determines which trading pairs to subscribe to
+    -- REQUIRED - user must configure before starting engine
+    base_currency VARCHAR(20),                 -- No default, user must select USD/EUR/ALL
     custom_currencies JSONB DEFAULT '[]'::jsonb,
-    
+
+    -- Pair Selection Filters (REQUIRED - for selecting which trading pairs to monitor)
+    -- These filter which pairs are suitable for arbitrage trading
+    max_pairs INT,                             -- Maximum number of pairs to monitor (e.g., 30-100)
+    min_volume_24h_usd FLOAT,                  -- Minimum 24h USD volume for a pair (e.g., 50000)
+    max_cost_min FLOAT,                        -- Maximum cost minimum for a pair in USD (e.g., 20)
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -40,9 +49,9 @@ CREATE TABLE IF NOT EXISTS live_trading_config (
     disabled_at TIMESTAMP
 );
 
--- Insert default config if not exists
-INSERT INTO live_trading_config (id)
-VALUES (1)
+-- Insert initial row with NULL values (user must configure)
+INSERT INTO live_trading_config (id, is_enabled)
+VALUES (1, FALSE)
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================

@@ -32,6 +32,9 @@ build/
 dist/
 *.egg
 
+# Rust
+rust_engine/target/
+
 # IDE
 .idea/
 .vscode/

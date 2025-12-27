@@ -1,45 +1,58 @@
-FROM python:3.11-slim
+# LimogiAICryptoX - Rust Backend
+# Multi-stage build for minimal image size
+
+# Stage 1: Build
+FROM rustlang/rust:nightly-slim AS builder
 
 WORKDIR /app
 
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    curl \
-    build-essential \
     pkg-config \
     libssl-dev \
-    patchelf \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Copy Cargo files first for dependency caching
+COPY Cargo.toml Cargo.lock* ./
 
-# Install maturin
-RUN pip install maturin
+# Create dummy main to build dependencies
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src
 
-# Copy and build Rust extension
-COPY rust_engine /app/rust_engine
-WORKDIR /app/rust_engine
+# Copy actual source code
+COPY src ./src
 
-# Build and cleanup to save space
-RUN maturin build --release && \
-    pip install target/wheels/*.whl && \
-    rm -rf target && \
-    rm -rf /root/.cargo/registry
+# Build the actual application
+RUN touch src/main.rs && cargo build --release
 
-# Back to app directory
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
 WORKDIR /app
 
-# Copy Python requirements and install
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application code
-COPY backend/app /app/app
+# Copy the binary from builder
+COPY --from=builder /app/target/release/trading_server /usr/local/bin/
 
+# Create non-root user for security
+RUN useradd -m -u 1000 trading
+USER trading
+
+# Expose API port
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/health || exit 1
+
+# Run the server
+CMD ["trading_server"]
