@@ -17,6 +17,10 @@ services:
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./db/migrations/001_add_live_trading.sql:/docker-entrypoint-initdb.d/02-live-trading.sql
       - ./db/migrations/002_rename_start_currency.sql:/docker-entrypoint-initdb.d/03-rename-start-currency.sql
+      - ./db/migrations/002_add_total_trade_amount.sql:/docker-entrypoint-initdb.d/04-add-total-trade-amount.sql
+      - ./db/migrations/006_live_opportunities.sql:/docker-entrypoint-initdb.d/05-live-opportunities.sql
+      - ./db/migrations/007_add_partial_tracking.sql:/docker-entrypoint-initdb.d/06-partial-tracking.sql
+      - ./db/migrations/008_fee_configuration.sql:/docker-entrypoint-initdb.d/07-fee-configuration.sql
     ports:
       - "5432:5432"
     healthcheck:

@@ -192,9 +192,7 @@ CREATE TRIGGER update_price_matrix_updated_at
     BEFORE UPDATE ON price_matrix
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_system_config_updated_at
-    BEFORE UPDATE ON system_config
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+-- NOTE: system_config table was removed - trigger removed as well
 
 -- ============================================
 -- FUNCTION: Clean old price ticks (keep 24h)

@@ -909,8 +909,12 @@ pub async fn get_positions(
     // Get total portfolio value directly from Kraken TradeBalance API
     // This is the authoritative source for total USD value
     let total_usd = match state.engine.get_trade_balance().await {
-        Ok(eb) => eb,
+        Ok(eb) => {
+            info!("get_positions: TradeBalance returned ${:.2}", eb);
+            eb
+        },
         Err(e) => {
+            error!("get_positions: TradeBalance failed: {}", e);
             // Return disconnected status on error
             return Json(serde_json::json!({
                 "success": false,

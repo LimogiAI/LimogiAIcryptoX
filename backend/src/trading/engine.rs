@@ -505,7 +505,10 @@ impl TradingEngine {
     pub async fn get_trade_balance(&self) -> Result<f64, EngineError> {
         let auth = match &self.auth {
             Some(a) if a.is_configured() => a,
-            _ => return Err(EngineError::Auth("Kraken API credentials not configured".to_string())),
+            _ => {
+                warn!("get_trade_balance: Kraken API credentials not configured");
+                return Err(EngineError::Auth("Kraken API credentials not configured".to_string()));
+            }
         };
 
         let client = reqwest::Client::new();
@@ -518,7 +521,10 @@ impl TradingEngine {
         let url = format!("https://api.kraken.com{}", path);
 
         let signature = auth.sign_request(path, nonce, &post_data)
-            .map_err(|e| EngineError::Auth(format!("Failed to sign: {}", e)))?;
+            .map_err(|e| {
+                warn!("get_trade_balance: Failed to sign request: {}", e);
+                EngineError::Auth(format!("Failed to sign: {}", e))
+            })?;
 
         let response = client.post(&url)
             .header("API-Key", auth.api_key())
@@ -527,13 +533,27 @@ impl TradingEngine {
             .body(post_data)
             .send()
             .await
-            .map_err(|e| EngineError::Execution(format!("Request failed: {}", e)))?;
+            .map_err(|e| {
+                warn!("get_trade_balance: HTTP request failed: {}", e);
+                EngineError::Execution(format!("Request failed: {}", e))
+            })?;
 
-        let json: serde_json::Value = response.json().await
-            .map_err(|e| EngineError::Execution(format!("Parse failed: {}", e)))?;
+        let status = response.status();
+        let body_text = response.text().await
+            .map_err(|e| {
+                warn!("get_trade_balance: Failed to read response body: {}", e);
+                EngineError::Execution(format!("Failed to read response: {}", e))
+            })?;
+
+        let json: serde_json::Value = serde_json::from_str(&body_text)
+            .map_err(|e| {
+                warn!("get_trade_balance: Failed to parse JSON (status={}): {} - body: {}", status, e, &body_text[..body_text.len().min(200)]);
+                EngineError::Execution(format!("Parse failed: {}", e))
+            })?;
 
         if let Some(error) = json.get("error").and_then(|e| e.as_array()) {
             if !error.is_empty() {
+                warn!("get_trade_balance: Kraken API error: {:?}", error);
                 return Err(EngineError::Execution(format!("API error: {:?}", error)));
             }
         }
