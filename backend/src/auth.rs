@@ -20,6 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use thiserror::Error;
 use tracing::{debug, info};
+use rand::Rng;
 
 type HmacSha512 = Hmac<Sha512>;
 
@@ -91,11 +92,20 @@ impl KrakenAuth {
             .decode(&api_secret)
             .map_err(|e| AuthError::InvalidSecret(e.to_string()))?;
 
-        // Initialize nonce from current timestamp in milliseconds
-        let initial_nonce = SystemTime::now()
+        // Initialize nonce from current timestamp in MICROSECONDS (not milliseconds)
+        // This provides 1000x more granularity and helps prevent nonce collisions.
+        // We also add a random offset (0-999999) to ensure uniqueness across restarts,
+        // since Kraken might have seen a higher nonce from a previous session.
+        let base_nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64;
+            .as_micros() as u64;
+
+        // Add random offset to ensure we're always ahead of any previous nonce
+        let random_offset: u64 = rand::thread_rng().gen_range(1_000_000..10_000_000);
+        let initial_nonce = base_nonce + random_offset;
+
+        info!("Nonce initialized: base={}, offset={}, initial={}", base_nonce, random_offset, initial_nonce);
 
         Ok(Self {
             api_key,
@@ -132,7 +142,8 @@ impl KrakenAuth {
     }
 
     /// Get next nonce value (must be increasing for each request)
-    fn next_nonce(&self) -> u64 {
+    /// PUBLIC: All authenticated API calls MUST use this to prevent nonce conflicts
+    pub fn next_nonce(&self) -> u64 {
         self.nonce_counter.fetch_add(1, Ordering::SeqCst)
     }
 

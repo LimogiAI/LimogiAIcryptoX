@@ -3,22 +3,44 @@ import { Card, Badge, Button } from '../ui'
 import { api } from '../../services/api'
 import type { LiveTrade, LegFill } from '../../types'
 
+const PAGE_SIZE = 15
+
 export function LiveTrades() {
   const [trades, setTrades] = useState<LiveTrade[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'completed' | 'partial' | 'failed'>('all')
   const [expandedTradeId, setExpandedTradeId] = useState<number | null>(null)
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalTrades, setTotalTrades] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+
+  const totalPages = Math.ceil(totalTrades / PAGE_SIZE)
+
   const fetchTrades = useCallback(async () => {
     try {
       const status = filter === 'all' ? null : filter.toUpperCase()
-      const data = await api.getLiveTrades(50, status)
-      setTrades(data)
+      const offset = (currentPage - 1) * PAGE_SIZE
+      const response = await api.getLiveTrades({
+        limit: PAGE_SIZE,
+        offset,
+        status,
+        hours: 168  // 7 days of history
+      })
+      setTrades(response.trades)
+      setTotalTrades(response.pagination.total)
+      setHasMore(response.pagination.has_more)
     } catch (error) {
       console.error('Failed to fetch trades:', error)
     } finally {
       setLoading(false)
     }
+  }, [filter, currentPage])
+
+  // Reset to page 1 when filter changes
+  useEffect(() => {
+    setCurrentPage(1)
   }, [filter])
 
   useEffect(() => {
@@ -208,6 +230,52 @@ export function LiveTrades() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {totalTrades > 0 && (
+        <div className="flex items-center justify-between mt-4 pt-4 border-t border-border/50">
+          <div className="text-sm text-text-muted">
+            Showing {((currentPage - 1) * PAGE_SIZE) + 1}-{Math.min(currentPage * PAGE_SIZE, totalTrades)} of {totalTrades} trades
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+            >
+              First
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+            >
+              Prev
+            </Button>
+            <span className="px-3 py-1 text-sm text-text-secondary">
+              Page {currentPage} of {totalPages || 1}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setCurrentPage(p => p + 1)}
+              disabled={!hasMore}
+            >
+              Next
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage >= totalPages}
+            >
+              Last
+            </Button>
+          </div>
         </div>
       )}
     </Card>

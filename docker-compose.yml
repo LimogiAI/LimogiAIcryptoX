@@ -16,6 +16,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./db/migrations/001_add_live_trading.sql:/docker-entrypoint-initdb.d/02-live-trading.sql
+      - ./db/migrations/002_rename_start_currency.sql:/docker-entrypoint-initdb.d/03-rename-start-currency.sql
     ports:
       - "5432:5432"
     healthcheck:

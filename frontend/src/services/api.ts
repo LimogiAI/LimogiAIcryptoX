@@ -57,6 +57,23 @@ export interface GetOpportunitiesOptions {
   minutes_ago?: number | null
 }
 
+export interface PaginatedTradesResponse {
+  trades: LiveTrade[]
+  pagination: {
+    total: number
+    limit: number
+    offset: number
+    has_more: boolean
+  }
+}
+
+export interface GetTradesOptions {
+  limit?: number
+  offset?: number
+  status?: string | null
+  hours?: number
+}
+
 export const api = {
   // ==================== STATUS ====================
   async getStatus(): Promise<StatusResponse> {
@@ -138,12 +155,12 @@ export const api = {
   },
 
   // ==================== LIVE TRADES ====================
-  async getLiveTrades(limit = 50, status: string | null = null, hours = 24): Promise<LiveTrade[]> {
-    let url = `/api/live/trades?limit=${limit}&hours=${hours}`
+  async getLiveTrades(options: GetTradesOptions = {}): Promise<PaginatedTradesResponse> {
+    const { limit = 20, offset = 0, status = null, hours = 24 } = options
+    let url = `/api/live/trades?limit=${limit}&offset=${offset}&hours=${hours}`
     if (status) url += `&status=${status}`
     const response = await client.get(url)
-    // API returns { count: N, trades: [...] } - extract trades
-    return response.data.trades
+    return response.data
   },
 
   async getLivePartialTrades(): Promise<LiveTrade[]> {

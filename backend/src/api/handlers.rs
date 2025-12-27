@@ -126,12 +126,14 @@ pub struct ExecuteTradeRequest {
 pub struct TradesQuery {
     #[serde(default = "default_limit")]
     pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
     pub status: Option<String>,
     #[serde(default = "default_hours")]
     pub hours: i32,
 }
 
-fn default_limit() -> i64 { 50 }
+fn default_limit() -> i64 { 20 }
 fn default_hours() -> i32 { 24 }
 
 #[derive(Debug, Deserialize)]
@@ -255,7 +257,6 @@ pub async fn get_config(
                 }
             };
 
-            // Return simplified response with start_currency instead of base_currency
             Json(serde_json::json!({
                 "id": config.id,
                 "is_enabled": config.is_enabled,
@@ -263,7 +264,7 @@ pub async fn get_config(
                 "min_profit_threshold": config.min_profit_threshold,
                 "max_daily_loss": config.max_daily_loss,
                 "max_total_loss": config.max_total_loss,
-                "start_currency": config.base_currency,
+                "start_currency": config.start_currency,
                 "custom_currencies": config.custom_currencies,
                 "max_pairs": config.max_pairs,
                 "min_volume_24h_usd": config.min_volume_24h_usd,
@@ -328,13 +329,13 @@ pub async fn get_configuration_status(
     // Check required fields - NO DEFAULTS ALLOWED
     // User must explicitly set these values
 
-    // 1. Start currency (base_currency) - REQUIRED
-    let base_currency = config.base_currency.clone().unwrap_or_default();
-    let start_currency = if base_currency.is_empty() {
+    // 1. Start currency - REQUIRED
+    let start_currency_val = config.start_currency.clone().unwrap_or_default();
+    let start_currency = if start_currency_val.is_empty() {
         missing_fields.push("start_currency: Select USD, EUR, or both for triangular arbitrage".to_string());
         None
     } else {
-        Some(base_currency)
+        Some(start_currency_val)
     };
 
     // 2. Trade amount - REQUIRED (must be set by user, not default)
@@ -488,7 +489,7 @@ pub async fn enable_trading(
     let mut missing_fields = Vec::new();
 
     // Check all required fields - NO DEFAULTS ALLOWED
-    if config.base_currency.clone().unwrap_or_default().is_empty() {
+    if config.start_currency.clone().unwrap_or_default().is_empty() {
         missing_fields.push("Start Currency (USD/EUR)");
     }
     if config.trade_amount.unwrap_or(0.0) <= 0.0 {
@@ -533,7 +534,7 @@ pub async fn enable_trading(
             info!("HFT Engine STARTED: trade_amount=${}, min_profit={:.2}%, start_currency={}",
                 config.trade_amount.unwrap_or(0.0),
                 config.min_profit_threshold.unwrap_or(0.0) * 100.0,
-                config.base_currency.clone().unwrap_or_default()
+                config.start_currency.clone().unwrap_or_default()
             );
             Json(serde_json::json!({
                 "success": true,
@@ -743,10 +744,18 @@ pub async fn get_trades(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TradesQuery>,
 ) -> impl IntoResponse {
-    match state.db.get_trades(params.limit, params.status.as_deref(), params.hours).await {
+    // Get total count for pagination
+    let total_count = state.db.get_trades_count(params.status.as_deref(), params.hours).await.unwrap_or(0);
+
+    match state.db.get_trades_paginated(params.limit, params.offset, params.status.as_deref(), params.hours).await {
         Ok(trades) => Json(serde_json::json!({
-            "count": trades.len(),
             "trades": trades,
+            "pagination": {
+                "total": total_count,
+                "limit": params.limit,
+                "offset": params.offset,
+                "has_more": params.offset + (trades.len() as i64) < total_count
+            }
         })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
@@ -897,43 +906,79 @@ pub async fn resolve_partial_trade(
 pub async fn get_positions(
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    // Get total portfolio value directly from Kraken TradeBalance API
+    // This is the authoritative source for total USD value
+    let total_usd = match state.engine.get_trade_balance().await {
+        Ok(eb) => eb,
+        Err(e) => {
+            // Return disconnected status on error
+            return Json(serde_json::json!({
+                "success": false,
+                "connected": false,
+                "error": e.to_string(),
+                "balances": {
+                    "usd": 0.0,
+                    "eur": 0.0,
+                    "eur_in_usd": 0.0,
+                    "total_usd": 0.0,
+                    "eur_usd_rate": 0.0
+                },
+                "positions": []
+            })).into_response();
+        }
+    };
+
     match state.engine.get_positions().await {
         Ok(positions) => {
             // Extract quote currency balances (USD, EUR)
             let mut usd_balance = 0.0;
             let mut eur_balance = 0.0;
-            let mut total_usd = 0.0;
 
-            // Get EUR/USD rate for conversion
-            let eur_usd_rate = state.engine.get_price("EUR/USD").unwrap_or(1.05);
+            // Get EUR/USD rate for conversion (fallback to reasonable default)
+            let eur_usd_rate = state.engine.get_price("EUR/USD").unwrap_or(1.04);
+
+            // Build list of positions with USD values
+            let mut positions_with_values: Vec<serde_json::Value> = Vec::new();
 
             for pos in &positions {
+                let mut usd_value: Option<f64> = None;
+
                 match pos.currency.as_str() {
                     "USD" | "ZUSD" => {
                         usd_balance += pos.balance;
-                        total_usd += pos.balance;
+                        usd_value = Some(pos.balance);
                     },
                     "USDT" | "USDC" => {
-                        total_usd += pos.balance;
+                        usd_value = Some(pos.balance);
                     },
                     "EUR" | "ZEUR" => {
                         eur_balance += pos.balance;
-                        total_usd += pos.balance * eur_usd_rate;
+                        let value = pos.balance * eur_usd_rate;
+                        usd_value = Some(value);
                     },
-                    _ => {
-                        // Try to get USD price for this currency
-                        let pair = format!("{}/USD", pos.currency);
+                    currency => {
+                        // Try to get USD price for this currency from cache
+                        let pair = format!("{}/USD", currency);
                         if let Some(price) = state.engine.get_price(&pair) {
-                            total_usd += pos.balance * price;
+                            let value = pos.balance * price;
+                            usd_value = Some(value);
                         } else {
                             // Try EUR pair and convert
-                            let eur_pair = format!("{}/EUR", pos.currency);
+                            let eur_pair = format!("{}/EUR", currency);
                             if let Some(eur_price) = state.engine.get_price(&eur_pair) {
-                                total_usd += pos.balance * eur_price * eur_usd_rate;
+                                let value = pos.balance * eur_price * eur_usd_rate;
+                                usd_value = Some(value);
                             }
+                            // Individual position USD value is optional - total_usd from TradeBalance is authoritative
                         }
                     }
                 }
+
+                positions_with_values.push(serde_json::json!({
+                    "currency": pos.currency,
+                    "balance": pos.balance,
+                    "usd_value": usd_value
+                }));
             }
 
             // Format timestamp in ET
@@ -950,7 +995,7 @@ pub async fn get_positions(
                     "eur_usd_rate": eur_usd_rate
                 },
                 "fetched_at": fetched_at,
-                "positions": positions
+                "positions": positions_with_values
             })).into_response()
         },
         Err(e) => {

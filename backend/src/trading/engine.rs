@@ -23,6 +23,7 @@ use std::time::Instant;
 use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
+use rand::Rng;
 
 #[derive(Error, Debug)]
 pub enum EngineError {
@@ -154,13 +155,16 @@ impl TradingEngine {
     pub async fn start(&self) -> Result<(), EngineError> {
         info!("Starting trading engine (HFT mode)...");
 
+        // Clear cache from any previous run to ensure pair count matches new config
+        self.cache.clear();
+
         // Load user configuration from database
         let db_config = self.db.get_config().await
             .map_err(|e| EngineError::Database(format!("Failed to load config: {}", e)))?;
 
         // Validate configuration
-        let base_currency = db_config.base_currency.clone().unwrap_or_default();
-        if base_currency.is_empty() {
+        let start_currency = db_config.start_currency.clone().unwrap_or_default();
+        if start_currency.is_empty() {
             return Err(EngineError::Config(
                 "Start currency not configured. Please select from the dashboard.".to_string()
             ));
@@ -180,7 +184,7 @@ impl TradingEngine {
         info!("Selecting high-liquidity pairs for HFT arbitrage...");
         let mut pair_config = PairSelectionConfig::default();
         pair_config.set_pair_selection_params(max_pairs as usize, min_volume_24h_usd, max_cost_min);
-        pair_config.set_start_currency(&base_currency);
+        pair_config.set_start_currency(&start_currency);
 
         if let Err(e) = pair_config.validate() {
             return Err(EngineError::Config(e));
@@ -207,7 +211,43 @@ impl TradingEngine {
             self.db.clone(),
         );
 
-        // Create event channel and connect to HFT loop
+        // Initialize execution engine FIRST (before WebSocket starts sending events)
+        if let Some(ref auth) = self.auth {
+            let exec_engine = ExecutionEngine::new(
+                Arc::clone(auth),
+                Arc::clone(&self.cache),
+            );
+
+            if let Err(e) = exec_engine.connect().await {
+                warn!("Failed to connect execution engine: {}", e);
+            } else {
+                // Set execution engine in HFT loop BEFORE events start
+                hft_loop.set_execution_engine(exec_engine).await;
+                info!("Execution engine connected");
+            }
+        }
+
+        // Configure HFT loop with user settings (before starting event channel)
+        let hft_config = HftConfig {
+            min_profit_threshold: db_config.min_profit_threshold.unwrap_or(0.1),
+            trade_amount: db_config.trade_amount.unwrap_or(10.0),
+            max_daily_loss: db_config.max_daily_loss.unwrap_or(100.0),
+            max_total_loss: db_config.max_total_loss.unwrap_or(500.0),
+            base_currencies: start_currency.split(',').map(|s| s.trim().to_uppercase()).collect(),
+        };
+        hft_loop.update_config(hft_config).await;
+
+        // Fetch and apply fees from Kraken
+        if self.auth.is_some() {
+            if let Ok(fee_data) = self.fetch_kraken_fees().await {
+                if let Some(taker) = fee_data.get("taker_fee").and_then(|v| v.as_f64()) {
+                    self.config_manager.update_fee_rate(taker, "kraken_api");
+                    info!("Fees loaded from Kraken API: taker={:.2}%", taker * 100.0);
+                }
+            }
+        }
+
+        // NOW create event channel and start HFT loop (after execution engine is ready)
         let hft_event_tx = hft_loop.create_event_channel();
 
         // Create WebSocket event channel
@@ -224,48 +264,12 @@ impl TradingEngine {
             info!("WebSocket to HFT event forwarder stopped");
         });
 
-        // Initialize WebSocket with pairs
+        // Initialize WebSocket with pairs and START (events will flow after this)
         ws.initialize_with_pairs(selected_pairs);
         ws.start(max_pairs as usize, 25).await
             .map_err(|e| EngineError::WebSocket(e.to_string()))?;
 
         *self.websocket.write().await = Some(ws);
-
-        // Initialize execution engine
-        if let Some(ref auth) = self.auth {
-            let exec_engine = ExecutionEngine::new(
-                Arc::clone(auth),
-                Arc::clone(&self.cache),
-            );
-
-            if let Err(e) = exec_engine.connect().await {
-                warn!("Failed to connect execution engine: {}", e);
-            } else {
-                // Set execution engine in HFT loop
-                hft_loop.set_execution_engine(exec_engine).await;
-                info!("Execution engine connected");
-            }
-        }
-
-        // Configure HFT loop with user settings
-        let hft_config = HftConfig {
-            min_profit_threshold: db_config.min_profit_threshold.unwrap_or(0.1),
-            trade_amount: db_config.trade_amount.unwrap_or(10.0),
-            max_daily_loss: db_config.max_daily_loss.unwrap_or(100.0),
-            max_total_loss: db_config.max_total_loss.unwrap_or(500.0),
-            base_currencies: base_currency.split(',').map(|s| s.trim().to_uppercase()).collect(),
-        };
-        hft_loop.update_config(hft_config).await;
-
-        // Fetch and apply fees from Kraken
-        if self.auth.is_some() {
-            if let Ok(fee_data) = self.fetch_kraken_fees().await {
-                if let Some(taker) = fee_data.get("taker_fee").and_then(|v| v.as_f64()) {
-                    self.config_manager.update_fee_rate(taker, "kraken_api");
-                    info!("Fees loaded from Kraken API: taker={:.2}%", taker * 100.0);
-                }
-            }
-        }
 
         // Store references
         *self.hft_loop.write().await = Some(hft_loop);
@@ -366,7 +370,7 @@ impl TradingEngine {
                 trade_amount: config.trade_amount.unwrap_or(10.0),
                 max_daily_loss: config.max_daily_loss.unwrap_or(100.0),
                 max_total_loss: config.max_total_loss.unwrap_or(500.0),
-                base_currencies: config.base_currency.clone()
+                base_currencies: config.start_currency.clone()
                     .unwrap_or_default()
                     .split(',')
                     .map(|s| s.trim().to_uppercase())
@@ -433,10 +437,8 @@ impl TradingEngine {
         };
 
         let client = reqwest::Client::new();
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        // Use shared nonce from KrakenAuth to prevent conflicts with other API calls
+        let nonce = auth.next_nonce();
 
         let post_data = format!("nonce={}", nonce);
         let path = "/0/private/Balance";
@@ -498,6 +500,55 @@ impl TradingEngine {
         }
     }
 
+    /// Get trade balance from Kraken (total portfolio value in USD)
+    /// Uses /0/private/TradeBalance endpoint which returns "eb" (equivalent balance)
+    pub async fn get_trade_balance(&self) -> Result<f64, EngineError> {
+        let auth = match &self.auth {
+            Some(a) if a.is_configured() => a,
+            _ => return Err(EngineError::Auth("Kraken API credentials not configured".to_string())),
+        };
+
+        let client = reqwest::Client::new();
+        // Use shared nonce from KrakenAuth to prevent conflicts with other API calls
+        let nonce = auth.next_nonce();
+
+        // Request trade balance with USD as the base asset
+        let post_data = format!("nonce={}&asset=ZUSD", nonce);
+        let path = "/0/private/TradeBalance";
+        let url = format!("https://api.kraken.com{}", path);
+
+        let signature = auth.sign_request(path, nonce, &post_data)
+            .map_err(|e| EngineError::Auth(format!("Failed to sign: {}", e)))?;
+
+        let response = client.post(&url)
+            .header("API-Key", auth.api_key())
+            .header("API-Sign", signature)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(post_data)
+            .send()
+            .await
+            .map_err(|e| EngineError::Execution(format!("Request failed: {}", e)))?;
+
+        let json: serde_json::Value = response.json().await
+            .map_err(|e| EngineError::Execution(format!("Parse failed: {}", e)))?;
+
+        if let Some(error) = json.get("error").and_then(|e| e.as_array()) {
+            if !error.is_empty() {
+                return Err(EngineError::Execution(format!("API error: {:?}", error)));
+            }
+        }
+
+        // Extract "eb" (equivalent balance) from result
+        // This is the total portfolio value in the specified asset (USD)
+        let eb = json.get("result")
+            .and_then(|r| r.get("eb"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        Ok(eb)
+    }
+
     /// Get prices
     pub fn get_prices(&self, limit: usize) -> Vec<PriceInfo> {
         self.cache.get_all_prices()
@@ -538,10 +589,8 @@ impl TradingEngine {
         }
 
         let client = reqwest::Client::new();
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        // Use shared nonce from KrakenAuth to prevent conflicts with other API calls
+        let nonce = auth.next_nonce();
 
         let post_data = format!("nonce={}&pair=XBTUSD", nonce);
         let path = "/0/private/TradeVolume";

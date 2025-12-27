@@ -57,7 +57,7 @@ impl Database {
             r#"
             SELECT
                 id, is_enabled, trade_amount, min_profit_threshold,
-                max_daily_loss, max_total_loss, base_currency, custom_currencies,
+                max_daily_loss, max_total_loss, start_currency, custom_currencies,
                 max_pairs, min_volume_24h_usd, max_cost_min,
                 created_at, updated_at, enabled_at, disabled_at
             FROM live_trading_config
@@ -83,7 +83,7 @@ impl Database {
                 min_profit_threshold = COALESCE($2, min_profit_threshold),
                 max_daily_loss = COALESCE($3, max_daily_loss),
                 max_total_loss = COALESCE($4, max_total_loss),
-                base_currency = COALESCE($5, base_currency),
+                start_currency = COALESCE($5, start_currency),
                 max_pairs = COALESCE($6, max_pairs),
                 min_volume_24h_usd = COALESCE($7, min_volume_24h_usd),
                 max_cost_min = COALESCE($8, max_cost_min),
@@ -91,7 +91,7 @@ impl Database {
             WHERE id = 1
             RETURNING
                 id, is_enabled, trade_amount, min_profit_threshold,
-                max_daily_loss, max_total_loss, base_currency, custom_currencies,
+                max_daily_loss, max_total_loss, start_currency, custom_currencies,
                 max_pairs, min_volume_24h_usd, max_cost_min,
                 created_at, updated_at, enabled_at, disabled_at
             "#
@@ -100,7 +100,7 @@ impl Database {
         .bind(updates.min_profit_threshold)
         .bind(updates.max_daily_loss)
         .bind(updates.max_total_loss)
-        .bind(updates.base_currency)
+        .bind(updates.start_currency)
         .bind(updates.max_pairs)
         .bind(updates.min_volume_24h_usd)
         .bind(updates.max_cost_min)
@@ -122,7 +122,7 @@ impl Database {
             WHERE id = 1
             RETURNING
                 id, is_enabled, trade_amount, min_profit_threshold,
-                max_daily_loss, max_total_loss, base_currency, custom_currencies,
+                max_daily_loss, max_total_loss, start_currency, custom_currencies,
                 max_pairs, min_volume_24h_usd, max_cost_min,
                 created_at, updated_at, enabled_at, disabled_at
             "#
@@ -145,7 +145,7 @@ impl Database {
             WHERE id = 1
             RETURNING
                 id, is_enabled, trade_amount, min_profit_threshold,
-                max_daily_loss, max_total_loss, base_currency, custom_currencies,
+                max_daily_loss, max_total_loss, start_currency, custom_currencies,
                 max_pairs, min_volume_24h_usd, max_cost_min,
                 created_at, updated_at, enabled_at, disabled_at
             "#
@@ -414,6 +414,62 @@ impl Database {
         .bind(status)
         .bind(hours)
         .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut trades = Vec::new();
+        for row in rows {
+            trades.push(LiveTrade::from_row(&row)?);
+        }
+        Ok(trades)
+    }
+
+    /// Get trades count for pagination
+    pub async fn get_trades_count(&self, status: Option<&str>, hours: i32) -> Result<i64, DbError> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM live_trades
+            WHERE
+                ($1::text IS NULL OR status = $1)
+                AND (created_at IS NULL OR created_at > NOW() - make_interval(hours => $2))
+            "#
+        )
+        .bind(status)
+        .bind(hours)
+        .fetch_one(self.pool())
+        .await?;
+
+        Ok(row.0)
+    }
+
+    /// Get trades with pagination (limit + offset)
+    pub async fn get_trades_paginated(&self, limit: i64, offset: i64, status: Option<&str>, hours: i32) -> Result<Vec<LiveTrade>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, trade_id, path, legs, amount_in, amount_out,
+                profit_loss, profit_loss_pct, status, current_leg,
+                error_message, held_currency, held_amount, held_value_usd,
+                resolved_at AT TIME ZONE 'UTC' as resolved_at,
+                resolved_amount_usd, resolution_trade_id,
+                order_ids, leg_fills,
+                started_at AT TIME ZONE 'UTC' as started_at,
+                completed_at AT TIME ZONE 'UTC' as completed_at,
+                total_execution_ms, opportunity_profit_pct,
+                created_at AT TIME ZONE 'UTC' as created_at
+            FROM live_trades
+            WHERE
+                ($1::text IS NULL OR status = $1)
+                AND (created_at IS NULL OR created_at > NOW() - make_interval(hours => $2))
+            ORDER BY id DESC
+            LIMIT $3 OFFSET $4
+            "#
+        )
+        .bind(status)
+        .bind(hours)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(self.pool())
         .await?;
 

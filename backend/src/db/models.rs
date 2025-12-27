@@ -15,7 +15,8 @@ pub struct LiveTradingConfig {
     pub min_profit_threshold: Option<f64>,
     pub max_daily_loss: Option<f64>,
     pub max_total_loss: Option<f64>,
-    pub base_currency: Option<String>,
+    /// Starting currency for triangular arbitrage (USD, EUR, or both)
+    pub start_currency: Option<String>,
     pub custom_currencies: Option<serde_json::Value>,
     // Pair Selection Filters (REQUIRED)
     pub max_pairs: Option<i32>,
@@ -39,7 +40,7 @@ impl Default for LiveTradingConfig {
             min_profit_threshold: None,
             max_daily_loss: None,
             max_total_loss: None,
-            base_currency: None,
+            start_currency: None,
             custom_currencies: Some(serde_json::json!([])),
             // Pair Selection Filters - user MUST configure
             max_pairs: None,
@@ -62,7 +63,7 @@ impl<'r> FromRow<'r, PgRow> for LiveTradingConfig {
             min_profit_threshold: row.try_get("min_profit_threshold").ok(),
             max_daily_loss: row.try_get("max_daily_loss").ok(),
             max_total_loss: row.try_get("max_total_loss").ok(),
-            base_currency: row.try_get("base_currency").ok(),
+            start_currency: row.try_get("start_currency").ok(),
             custom_currencies: row.try_get("custom_currencies").ok(),
             max_pairs: row.try_get("max_pairs").ok(),
             min_volume_24h_usd: row.try_get("min_volume_24h_usd").ok(),
@@ -82,8 +83,10 @@ pub struct ConfigUpdate {
     pub min_profit_threshold: Option<f64>,
     pub max_daily_loss: Option<f64>,
     pub max_total_loss: Option<f64>,
-    #[serde(alias = "start_currency")]
-    pub base_currency: Option<String>,
+    /// Starting currency for triangular arbitrage (USD, EUR, or both)
+    /// Accepts both "start_currency" and "base_currency" for backwards compatibility
+    #[serde(alias = "base_currency")]
+    pub start_currency: Option<String>,
     // Pair Selection Filters
     pub max_pairs: Option<i32>,
     pub min_volume_24h_usd: Option<f64>,
