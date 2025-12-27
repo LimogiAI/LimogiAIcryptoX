@@ -11,7 +11,7 @@ interface Props {
 
 export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = false }: Props) {
   const [config, setConfig] = useState({
-    base_currency: configStatus?.config_summary?.start_currency || '',
+    start_currency: configStatus?.config_summary?.start_currency || '',
     trade_amount: configStatus?.config_summary?.trade_amount?.toString() || '',
     min_profit_threshold: configStatus?.config_summary?.min_profit_threshold != null
       ? (configStatus.config_summary.min_profit_threshold * 100).toString()
@@ -206,7 +206,7 @@ export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = 
 
     try {
       await api.updateLiveConfig({
-        base_currency: config.base_currency,
+        start_currency: config.start_currency,
         trade_amount: parseFloat(config.trade_amount) || 0,
         min_profit_threshold: (parseFloat(config.min_profit_threshold) || 0) / 100,
         max_daily_loss: parseFloat(config.max_daily_loss) || 0,
@@ -237,7 +237,7 @@ export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = 
 
   const isFormValid = () => {
     return (
-      config.base_currency &&
+      config.start_currency &&
       parseFloat(config.trade_amount) > 0 &&
       config.min_profit_threshold !== '' &&
       parseFloat(config.max_daily_loss) > 0 &&
@@ -285,14 +285,14 @@ export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = 
         <Card
           title="Start Currencies"
           description="Select the currencies you want to trade with (multi-select)"
-          status={isFieldMissing('currency') ? 'required' : config.base_currency ? 'complete' : 'default'}
+          status={isFieldMissing('currency') ? 'required' : config.start_currency ? 'complete' : 'default'}
         >
           {(() => {
             // Parse current selection into array
-            const selectedCurrencies = config.base_currency
-              ? config.base_currency === 'ALL'
+            const selectedCurrencies = config.start_currency
+              ? config.start_currency === 'ALL'
                 ? ['USD', 'EUR']
-                : config.base_currency.split(',').map(c => c.trim()).filter(Boolean)
+                : config.start_currency.split(',').map(c => c.trim()).filter(Boolean)
               : [];
 
             // Available currencies (common Kraken quote currencies)
@@ -306,7 +306,7 @@ export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = 
 
               // Store as comma-separated or empty
               const newValue = newSelection.length > 0 ? newSelection.join(',') : '';
-              setConfig(c => ({ ...c, base_currency: newValue }));
+              setConfig(c => ({ ...c, start_currency: newValue }));
             };
 
             // Add a custom currency
@@ -314,7 +314,7 @@ export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = 
               const normalized = currency.trim().toUpperCase();
               if (normalized && !selectedCurrencies.includes(normalized)) {
                 const newSelection = [...selectedCurrencies, normalized];
-                setConfig(c => ({ ...c, base_currency: newSelection.join(',') }));
+                setConfig(c => ({ ...c, start_currency: newSelection.join(',') }));
               }
             };
 

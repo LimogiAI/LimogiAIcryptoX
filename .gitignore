@@ -34,6 +34,7 @@ dist/
 
 # Rust
 rust_engine/target/
+backend/target/
 
 # IDE
 .idea/

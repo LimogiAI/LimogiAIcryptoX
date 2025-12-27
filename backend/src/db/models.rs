@@ -82,6 +82,7 @@ pub struct ConfigUpdate {
     pub min_profit_threshold: Option<f64>,
     pub max_daily_loss: Option<f64>,
     pub max_total_loss: Option<f64>,
+    #[serde(alias = "start_currency")]
     pub base_currency: Option<String>,
     // Pair Selection Filters
     pub max_pairs: Option<i32>,

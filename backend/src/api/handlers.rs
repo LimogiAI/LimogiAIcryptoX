@@ -11,9 +11,66 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use chrono::{DateTime, Datelike, FixedOffset, TimeZone, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, error};
+
+/// Check if a date is in US Eastern Daylight Time (EDT)
+/// DST starts 2nd Sunday of March, ends 1st Sunday of November
+fn is_dst(dt: &DateTime<Utc>) -> bool {
+    let year = dt.year();
+    let month = dt.month();
+    let day = dt.day();
+
+    // March: DST starts on 2nd Sunday
+    if month == 3 {
+        let first_day = Utc.with_ymd_and_hms(year, 3, 1, 0, 0, 0).unwrap();
+        let first_sunday = match first_day.weekday() {
+            Weekday::Sun => 1,
+            Weekday::Mon => 7,
+            Weekday::Tue => 6,
+            Weekday::Wed => 5,
+            Weekday::Thu => 4,
+            Weekday::Fri => 3,
+            Weekday::Sat => 2,
+        };
+        let second_sunday = first_sunday + 7;
+        return day >= second_sunday;
+    }
+
+    // November: DST ends on 1st Sunday
+    if month == 11 {
+        let first_day = Utc.with_ymd_and_hms(year, 11, 1, 0, 0, 0).unwrap();
+        let first_sunday = match first_day.weekday() {
+            Weekday::Sun => 1,
+            Weekday::Mon => 7,
+            Weekday::Tue => 6,
+            Weekday::Wed => 5,
+            Weekday::Thu => 4,
+            Weekday::Fri => 3,
+            Weekday::Sat => 2,
+        };
+        return day < first_sunday;
+    }
+
+    // April-October: DST active
+    // December-February: Standard time
+    month >= 4 && month <= 10
+}
+
+/// Format a UTC datetime in Eastern Time (ET/EDT)
+fn format_datetime_et(dt: DateTime<Utc>) -> String {
+    let (offset_hours, suffix) = if is_dst(&dt) {
+        (-4, "EDT")
+    } else {
+        (-5, "EST")
+    };
+
+    let offset = FixedOffset::east_opt(offset_hours * 3600).unwrap();
+    let et_time = dt.with_timezone(&offset);
+    format!("{} {}", et_time.format("%Y-%m-%d %H:%M:%S"), suffix)
+}
 
 // ==========================================
 // Response Helpers
@@ -158,14 +215,62 @@ pub async fn get_config(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.db.get_config().await {
-        Ok(config) => Json(serde_json::json!({
-            "config": config,
-            "options": {
-                "base_currency": ["USD", "EUR"],
-                "trade_amounts": [20.0, 50.0, 100.0],
-                "profit_thresholds": [0.001, 0.002, 0.003, 0.005, 0.01]
-            }
-        })).into_response(),
+        Ok(config) => {
+            // Calculate session duration if trading is enabled
+            let session_info = if config.is_enabled {
+                if let Some(enabled_at) = config.enabled_at {
+                    let duration_secs = Utc::now().signed_duration_since(enabled_at).num_seconds();
+                    let hours = duration_secs / 3600;
+                    let minutes = (duration_secs % 3600) / 60;
+                    let seconds = duration_secs % 60;
+
+                    Some(serde_json::json!({
+                        "started_at": format_datetime_et(enabled_at),
+                        "duration_seconds": duration_secs,
+                        "duration_formatted": format!("{}h {}m {}s", hours, minutes, seconds)
+                    }))
+                } else {
+                    None
+                }
+            } else {
+                // If stopped, show last session info
+                if let (Some(enabled_at), Some(disabled_at)) = (config.enabled_at, config.disabled_at) {
+                    let duration_secs = disabled_at.signed_duration_since(enabled_at).num_seconds();
+                    if duration_secs > 0 {
+                        let hours = duration_secs / 3600;
+                        let minutes = (duration_secs % 3600) / 60;
+                        let seconds = duration_secs % 60;
+
+                        Some(serde_json::json!({
+                            "started_at": format_datetime_et(enabled_at),
+                            "stopped_at": format_datetime_et(disabled_at),
+                            "duration_seconds": duration_secs,
+                            "duration_formatted": format!("{}h {}m {}s", hours, minutes, seconds)
+                        }))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            // Return simplified response with start_currency instead of base_currency
+            Json(serde_json::json!({
+                "id": config.id,
+                "is_enabled": config.is_enabled,
+                "trade_amount": config.trade_amount,
+                "min_profit_threshold": config.min_profit_threshold,
+                "max_daily_loss": config.max_daily_loss,
+                "max_total_loss": config.max_total_loss,
+                "start_currency": config.base_currency,
+                "custom_currencies": config.custom_currencies,
+                "max_pairs": config.max_pairs,
+                "min_volume_24h_usd": config.min_volume_24h_usd,
+                "max_cost_min": config.max_cost_min,
+                "session": session_info
+            })).into_response()
+        },
         Err(e) => error_response(&e.to_string()),
     }
 }

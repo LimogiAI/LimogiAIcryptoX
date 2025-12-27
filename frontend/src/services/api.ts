@@ -73,8 +73,8 @@ export const api = {
   // ==================== LIVE TRADING CONFIG ====================
   async getLiveConfig(): Promise<LiveConfig> {
     const response = await client.get('/api/live/config')
-    // API returns { config: {...}, options: {...} } - extract config
-    return response.data.config
+    // API returns config directly (simplified)
+    return response.data
   },
 
   async updateLiveConfig(config: ConfigUpdate): Promise<LiveConfig> {

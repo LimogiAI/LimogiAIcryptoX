@@ -109,6 +109,16 @@ export function TradingControls({ onRefresh }: Props) {
                 </Badge>
               )}
             </div>
+            {/* Session Duration */}
+            {config?.session && (
+              <div className="text-sm text-text-secondary mt-1">
+                {config.session.stopped_at ? (
+                  <span>Last session: {config.session.duration_formatted}</span>
+                ) : (
+                  <span>Running: {config.session.duration_formatted}</span>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex gap-2">
             {isTrading ? (
@@ -155,11 +165,33 @@ export function TradingControls({ onRefresh }: Props) {
           </div>
         )}
 
+        {/* Session Info */}
+        {config?.session && (
+          <div className="p-3 bg-bg-tertiary rounded-lg mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+              <div>
+                <p className="text-text-muted">Started</p>
+                <p className="font-medium">{config.session.started_at}</p>
+              </div>
+              {config.session.stopped_at && (
+                <div>
+                  <p className="text-text-muted">Stopped</p>
+                  <p className="font-medium">{config.session.stopped_at}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-text-muted">Duration</p>
+                <p className="font-medium text-accent-primary">{config.session.duration_formatted}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Config Summary */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-border">
           <div>
             <p className="text-xs text-text-muted uppercase">Currency</p>
-            <p className="text-lg font-semibold">{config?.base_currency || 'N/A'}</p>
+            <p className="text-lg font-semibold">{config?.start_currency || 'N/A'}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted uppercase">Trade Amount</p>
@@ -215,7 +247,7 @@ export function TradingControls({ onRefresh }: Props) {
                 ? 'text-accent-success'
                 : 'text-accent-danger'
             }`}>
-              ${((state?.daily_profit ?? 0) - (state?.daily_loss ?? 0)).toFixed(2)}
+              ${((state?.daily_profit ?? 0) - (state?.daily_loss ?? 0)).toFixed(5)}
             </p>
           </div>
           <div>
@@ -225,7 +257,7 @@ export function TradingControls({ onRefresh }: Props) {
                 ? 'text-accent-success'
                 : 'text-accent-danger'
             }`}>
-              ${((state?.total_profit ?? 0) - (state?.total_loss ?? 0)).toFixed(2)}
+              ${((state?.total_profit ?? 0) - (state?.total_loss ?? 0)).toFixed(5)}
             </p>
           </div>
           <div>

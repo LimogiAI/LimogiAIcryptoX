@@ -36,6 +36,14 @@ export interface FeeConfigStatus {
   last_updated_at: string | null;
 }
 
+// Trading Session Info
+export interface TradingSession {
+  started_at: string;
+  stopped_at?: string;
+  duration_seconds: number;
+  duration_formatted: string;
+}
+
 // Live Trading Config
 export interface LiveConfig {
   id: number;
@@ -44,16 +52,14 @@ export interface LiveConfig {
   min_profit_threshold: number | null;
   max_daily_loss: number | null;
   max_total_loss: number | null;
-  base_currency: string | null;
+  start_currency: string | null;
   custom_currencies: string[] | null;
   // Pair Selection Filters (REQUIRED for pair filtering)
   max_pairs: number | null;
   min_volume_24h_usd: number | null;
   max_cost_min: number | null;
-  created_at: string | null;
-  updated_at: string | null;
-  enabled_at: string | null;
-  disabled_at: string | null;
+  // Session tracking
+  session: TradingSession | null;
 }
 
 export interface ConfigUpdate {
@@ -61,7 +67,7 @@ export interface ConfigUpdate {
   min_profit_threshold?: number;
   max_daily_loss?: number;
   max_total_loss?: number;
-  base_currency?: string;
+  start_currency?: string;
   // Pair Selection Filters
   max_pairs?: number;
   min_volume_24h_usd?: number;

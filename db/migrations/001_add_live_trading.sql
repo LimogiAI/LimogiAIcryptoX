@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS live_trading_config (
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    enabled_at TIMESTAMP,
-    disabled_at TIMESTAMP
+    enabled_at TIMESTAMPTZ,
+    disabled_at TIMESTAMPTZ
 );
 
 -- Insert initial row with NULL values (user must configure)
