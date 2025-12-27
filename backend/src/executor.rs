@@ -118,7 +118,8 @@ pub struct OrderResponse {
     pub filled_qty: f64,
     pub avg_price: f64,
     pub cum_cost: f64,  // Cumulative cost (quote currency spent for BUY orders)
-    pub fee: f64,
+    pub fee: f64,       // Fee in USD equivalent (for tracking/reporting)
+    pub fee_native: f64, // Fee in native currency (for amount adjustment)
     #[allow(dead_code)]
     pub error: Option<String>,
 }
@@ -278,6 +279,7 @@ impl ExecutionEngine {
                                                 avg_price: 0.0,
                                                 cum_cost: 0.0,
                                                 fee: 0.0,
+                                                fee_native: 0.0,
                                                 error: Some(error_msg.to_string()),
                                             };
                                             let _ = pending.response_tx.send(response);
@@ -329,17 +331,18 @@ impl ExecutionEngine {
                                         // Parse fees - Kraken v2 uses fee_usd_equiv for total USD fees
                                         let fee = exec.get("fee_usd_equiv")
                                             .map(parse_f64)
-                                            .or_else(|| {
-                                                // Fallback: sum fees from the fees array
-                                                exec.get("fees")
-                                                    .and_then(|f| f.as_array())
-                                                    .map(|fees| {
-                                                        fees.iter()
-                                                            .filter_map(|fee_item| {
-                                                                fee_item.get("qty").map(parse_f64)
-                                                            })
-                                                            .sum()
+                                            .unwrap_or(0.0);
+
+                                        // Parse native currency fee from fees array
+                                        // This is needed to calculate NET amounts for each leg
+                                        let fee_native = exec.get("fees")
+                                            .and_then(|f| f.as_array())
+                                            .map(|fees| {
+                                                fees.iter()
+                                                    .filter_map(|fee_item| {
+                                                        fee_item.get("qty").map(parse_f64)
                                                     })
+                                                    .sum()
                                             })
                                             .unwrap_or(0.0);
 
@@ -365,6 +368,7 @@ impl ExecutionEngine {
                                                     avg_price,
                                                     cum_cost,
                                                     fee,
+                                                    fee_native,
                                                     error: if status != "filled" {
                                                         Some(format!("Order {}", status))
                                                     } else {
@@ -555,13 +559,12 @@ impl ExecutionEngine {
             
             match result {
                 Ok(response) => {
-                    // Calculate output amount based on order side
-                    // BUY: We spend quote currency, receive base currency (filled_qty)
-                    // SELL: We sell base currency, receive quote currency (cum_cost or filled_qty * avg_price)
-                    let output_amount = match side {
+                    // Calculate GROSS output amount based on order side
+                    // BUY: We receive base currency (filled_qty)
+                    // SELL: We receive quote currency (cum_cost)
+                    let gross_output = match side {
                         OrderSide::Buy => response.filled_qty,
                         OrderSide::Sell => {
-                            // Use cum_cost if available (more accurate), otherwise calculate
                             if response.cum_cost > 0.0 {
                                 response.cum_cost
                             } else {
@@ -570,8 +573,14 @@ impl ExecutionEngine {
                         }
                     };
 
-                    info!("⚡ Leg {} completed: {} {} | in={:.8} out={:.8} | price={:.6} fee={:.6} | {}ms",
-                          i + 1, side, pair, current_amount, output_amount, response.avg_price, response.fee, leg_duration);
+                    // Calculate NET output by deducting native currency fee
+                    // Fee is charged on what we RECEIVE:
+                    // - BUY: fee in base currency (deduct from filled_qty)
+                    // - SELL: fee in quote currency (deduct from cum_cost)
+                    let output_amount = gross_output - response.fee_native;
+
+                    info!("⚡ Leg {} completed: {} {} | in={:.8} gross={:.8} net={:.8} | price={:.6} fee={:.6} (native={:.8}) | {}ms",
+                          i + 1, side, pair, current_amount, gross_output, output_amount, response.avg_price, response.fee, response.fee_native, leg_duration);
 
                     total_fees += response.fee;
 
@@ -627,12 +636,14 @@ impl ExecutionEngine {
         }
         
         let total_duration = start_time.elapsed().as_millis() as u64;
-        // Deduct total fees (in USD equivalent) from profit calculation
-        // This gives us the NET profit after all trading fees
-        let profit_amount = current_amount - start_amount - total_fees;
+
+        // Calculate NET profit
+        // Since we now track NET amounts through each leg (deducting native fees),
+        // current_amount is already the NET end amount - no need to subtract fees again
+        let profit_amount = current_amount - start_amount;
         let profit_pct = (profit_amount / start_amount) * 100.0;
 
-        info!("Trade {} completed: ${:.2} -> ${:.2} (fees: ${:.4}) = net {:+.4}% in {}ms",
+        info!("Trade {} completed: ${:.2} -> ${:.2} (net after ${:.4} fees) = {:+.4}% in {}ms",
             trade_id, start_amount, current_amount, total_fees, profit_pct, total_duration);
         
         Ok(TradeResult {
@@ -710,10 +721,8 @@ impl ExecutionEngine {
         
         match result {
             Ok(response) => {
-                // Calculate output amount based on order side
-                // BUY: We spend quote currency, receive base currency (filled_qty)
-                // SELL: We sell base currency, receive quote currency (cum_cost or filled_qty * avg_price)
-                let output_amount = match side {
+                // Calculate GROSS output amount based on order side
+                let gross_output = match side {
                     OrderSide::Buy => response.filled_qty,
                     OrderSide::Sell => {
                         if response.cum_cost > 0.0 {
@@ -724,11 +733,14 @@ impl ExecutionEngine {
                     }
                 };
 
-                info!("Single leg completed: {} {} | in={:.8} out={:.8} | price={:.6} fee={:.6}",
-                      side, pair, amount, output_amount, response.avg_price, response.fee);
+                // Calculate NET output by deducting native currency fee
+                let output_amount = gross_output - response.fee_native;
 
-                // Deduct fee from profit calculation
-                let profit_amount = output_amount - amount - response.fee;
+                info!("Single leg completed: {} {} | in={:.8} gross={:.8} net={:.8} | price={:.6} fee={:.6} (native={:.8})",
+                      side, pair, amount, gross_output, output_amount, response.avg_price, response.fee, response.fee_native);
+
+                // Profit is simply NET output - input (fee already deducted from output)
+                let profit_amount = output_amount - amount;
                 let profit_pct = if amount > 0.0 { (profit_amount / amount) * 100.0 } else { 0.0 };
 
                 let leg_result = LegResult {
