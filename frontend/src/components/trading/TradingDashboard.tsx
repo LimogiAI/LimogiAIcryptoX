@@ -2,7 +2,11 @@ import { TradingControls } from './TradingControls'
 import { LiveTrades } from './LiveTrades'
 import { PartialTrades } from './PartialTrades'
 
-export function TradingDashboard() {
+interface Props {
+  onTradingStatusChange?: () => void
+}
+
+export function TradingDashboard({ onTradingStatusChange }: Props) {
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
       <div className="space-y-6">
@@ -10,7 +14,7 @@ export function TradingDashboard() {
         <PartialTrades />
 
         {/* Trading Controls */}
-        <TradingControls />
+        <TradingControls onRefresh={onTradingStatusChange} />
 
         {/* Live Trades Table */}
         <LiveTrades />

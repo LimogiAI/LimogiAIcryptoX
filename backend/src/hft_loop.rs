@@ -39,6 +39,17 @@ pub enum HftState {
     Stopped,
 }
 
+/// Per-leg timing data for database storage
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LegTiming {
+    pub leg: usize,
+    pub pair: String,
+    pub side: String,
+    pub duration_ms: u64,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 /// Result of a single trading cycle
 #[derive(Debug, Clone)]
 pub enum CycleResult {
@@ -50,12 +61,14 @@ pub enum CycleResult {
         profit_pct: f64,
         profit_amount: f64,
         duration_ms: u64,
+        leg_timings: Vec<LegTiming>,
     },
     /// Trade failed (partial or error)
     TradeFailed {
         path: String,
         error: String,
         is_partial: bool,
+        leg_timings: Vec<LegTiming>,
     },
     /// Circuit breaker tripped
     CircuitBroken {
@@ -351,6 +364,7 @@ impl HftLoop {
                     path: opp.path,
                     error: "Execution engine not available".to_string(),
                     is_partial: false,
+                    leg_timings: vec![],
                 };
             }
         };
@@ -367,13 +381,30 @@ impl HftLoop {
 
         match result {
             Ok(trade_result) => {
-                if trade_result.success {
-                    // Build per-leg timing summary
-                    let leg_times: Vec<String> = trade_result.legs.iter()
-                        .map(|l| format!("L{}:{}ms", l.leg_index + 1, l.duration_ms))
-                        .collect();
-                    let leg_times_str = leg_times.join(", ");
+                // Build leg timings and log string in single pass (post-execution, not time-critical)
+                let mut leg_timings = Vec::with_capacity(trade_result.legs.len());
+                let mut leg_times_parts = Vec::with_capacity(trade_result.legs.len());
+                let mut completed_legs = 0usize;
 
+                for l in &trade_result.legs {
+                    leg_timings.push(LegTiming {
+                        leg: l.leg_index + 1,
+                        pair: l.pair.clone(),
+                        side: l.side.clone(),
+                        duration_ms: l.duration_ms,
+                        success: l.success,
+                        error: l.error.clone(),
+                    });
+                    if l.success {
+                        completed_legs += 1;
+                        leg_times_parts.push(format!("L{}:{}ms", l.leg_index + 1, l.duration_ms));
+                    } else {
+                        leg_times_parts.push(format!("L{}:{}ms✗", l.leg_index + 1, l.duration_ms));
+                    }
+                }
+                let leg_times_str = leg_times_parts.join(", ");
+
+                if trade_result.success {
                     info!(
                         "💰 Trade SUCCESS: {} | ${:.4} ({:.3}%) | scan: {:.2}ms | legs: [{}] | exec: {}ms | total: {}ms",
                         trade_result.path, trade_result.profit_amount, trade_result.profit_pct,
@@ -384,23 +415,10 @@ impl HftLoop {
                         profit_pct: trade_result.profit_pct,
                         profit_amount: trade_result.profit_amount,
                         duration_ms,
+                        leg_timings,
                     }
                 } else {
-                    // Check if partial (some legs completed)
-                    let completed_legs = trade_result.legs.iter().filter(|l| l.success).count();
                     let is_partial = completed_legs > 0 && completed_legs < trade_result.legs.len();
-
-                    // Build per-leg timing summary (including failed legs)
-                    let leg_times: Vec<String> = trade_result.legs.iter()
-                        .map(|l| {
-                            if l.success {
-                                format!("L{}:{}ms✓", l.leg_index + 1, l.duration_ms)
-                            } else {
-                                format!("L{}:{}ms✗", l.leg_index + 1, l.duration_ms)
-                            }
-                        })
-                        .collect();
-                    let leg_times_str = leg_times.join(", ");
 
                     warn!(
                         "❌ Trade FAILED: {} | {} | scan: {:.2}ms | legs: [{}] | exec: {}ms | total: {}ms",
@@ -413,6 +431,7 @@ impl HftLoop {
                         path: trade_result.path,
                         error: trade_result.error.unwrap_or_else(|| "Unknown error".to_string()),
                         is_partial,
+                        leg_timings,
                     }
                 }
             }
@@ -423,6 +442,7 @@ impl HftLoop {
                     path: opp.path,
                     error: e.to_string(),
                     is_partial: false,
+                    leg_timings: vec![],
                 }
             }
         }
@@ -490,7 +510,10 @@ impl HftLoop {
 
         // Save to database (no locks held)
         match cycle_result {
-            CycleResult::TradeSuccess { path, profit_pct, profit_amount, duration_ms } => {
+            CycleResult::TradeSuccess { path, profit_pct, profit_amount, duration_ms, leg_timings } => {
+                // Serialize leg timings to JSON
+                let leg_fills_json = serde_json::to_value(leg_timings).ok();
+
                 let new_trade = NewLiveTrade {
                     trade_id: uuid::Uuid::new_v4().to_string(),
                     path: path.clone(),
@@ -506,7 +529,7 @@ impl HftLoop {
                     held_amount: None,
                     held_value_usd: None,
                     order_ids: None,
-                    leg_fills: None,
+                    leg_fills: leg_fills_json,
                     started_at: Some(chrono::Utc::now()),
                     completed_at: Some(chrono::Utc::now()),
                     total_execution_ms: Some(*duration_ms as f64),
@@ -515,6 +538,12 @@ impl HftLoop {
 
                 if let Err(e) = db.save_trade(&new_trade).await {
                     warn!("Failed to save trade to DB: {}", e);
+                }
+
+                // Update trading state with trade result
+                let is_win = *profit_amount > 0.0;
+                if let Err(e) = db.record_trade_result(*profit_amount, config_snapshot.trade_amount, is_win).await {
+                    warn!("Failed to update trading state: {}", e);
                 }
 
                 // Check circuit breakers (using snapshot values)
@@ -536,7 +565,14 @@ impl HftLoop {
                 }
             }
 
-            CycleResult::TradeFailed { path, error, is_partial } => {
+            CycleResult::TradeFailed { path, error, is_partial, leg_timings } => {
+                // Serialize leg timings to JSON (even partial data is useful)
+                let leg_fills_json = if leg_timings.is_empty() {
+                    None
+                } else {
+                    serde_json::to_value(leg_timings).ok()
+                };
+
                 let new_trade = NewLiveTrade {
                     trade_id: uuid::Uuid::new_v4().to_string(),
                     path: path.clone(),
@@ -552,7 +588,7 @@ impl HftLoop {
                     held_amount: None,
                     held_value_usd: None,
                     order_ids: None,
-                    leg_fills: None,
+                    leg_fills: leg_fills_json,
                     started_at: Some(chrono::Utc::now()),
                     completed_at: Some(chrono::Utc::now()),
                     total_execution_ms: None,

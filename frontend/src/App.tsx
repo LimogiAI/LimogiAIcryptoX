@@ -39,13 +39,18 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [isTradingEnabled, setIsTradingEnabled] = useState(false)
 
   const checkConfig = async () => {
     setLoading(true)
     setError(null)
     try {
-      const status = await api.getConfigurationStatus()
+      const [status, liveConfig] = await Promise.all([
+        api.getConfigurationStatus(),
+        api.getLiveConfig()
+      ])
       setConfigStatus(status)
+      setIsTradingEnabled(liveConfig?.is_enabled ?? false)
     } catch (err) {
       setError('Failed to connect to the trading server. Please ensure the backend is running.')
       console.error('Failed to check configuration:', err)
@@ -90,6 +95,7 @@ export default function App() {
           <SetupDashboard
             configStatus={configStatus}
             onConfigured={handleConfigured}
+            isTradingEnabled={isTradingEnabled}
           />
         </div>
       </div>
@@ -104,11 +110,12 @@ export default function App() {
       />
       <main className="pt-4">
         {isConfigured ? (
-          <TradingDashboard />
+          <TradingDashboard onTradingStatusChange={checkConfig} />
         ) : (
           <SetupDashboard
             configStatus={configStatus}
             onConfigured={handleConfigured}
+            isTradingEnabled={isTradingEnabled}
           />
         )}
       </main>

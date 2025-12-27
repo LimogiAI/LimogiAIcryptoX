@@ -281,6 +281,59 @@ impl Database {
         Ok(LiveTradingState::from_row(&row)?)
     }
 
+    /// Record a completed trade result in the state
+    pub async fn record_trade_result(
+        &self,
+        profit_loss: f64,
+        trade_amount: f64,
+        is_win: bool,
+    ) -> Result<(), DbError> {
+        // Update based on whether it was a profit or loss
+        if profit_loss >= 0.0 {
+            sqlx::query(
+                r#"
+                UPDATE live_trading_state
+                SET
+                    daily_profit = daily_profit + $1,
+                    total_profit = total_profit + $1,
+                    daily_trades = daily_trades + 1,
+                    total_trades = total_trades + 1,
+                    daily_wins = daily_wins + CASE WHEN $2 THEN 1 ELSE 0 END,
+                    total_wins = total_wins + CASE WHEN $2 THEN 1 ELSE 0 END,
+                    total_trade_amount = COALESCE(total_trade_amount, 0) + $3,
+                    last_trade_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+                "#
+            )
+            .bind(profit_loss)
+            .bind(is_win)
+            .bind(trade_amount)
+            .execute(self.pool())
+            .await?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE live_trading_state
+                SET
+                    daily_loss = daily_loss + $1,
+                    total_loss = total_loss + $1,
+                    daily_trades = daily_trades + 1,
+                    total_trades = total_trades + 1,
+                    total_trade_amount = COALESCE(total_trade_amount, 0) + $2,
+                    last_trade_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+                "#
+            )
+            .bind(profit_loss.abs())
+            .bind(trade_amount)
+            .execute(self.pool())
+            .await?;
+        }
+        Ok(())
+    }
+
     // ==========================================
     // Trade Operations
     // ==========================================

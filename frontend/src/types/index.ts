@@ -124,12 +124,12 @@ export interface LiveTrade {
 }
 
 export interface LegFill {
+  leg: number;
   pair: string;
   side: string;
-  amount_in: number;
-  amount_out: number;
-  price: number;
-  fee: number;
+  duration_ms: number;
+  success: boolean;
+  error: string | null;
 }
 
 // Scanner Status

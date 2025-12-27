@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Fragment } from 'react'
 import { Card, Badge, Button } from '../ui'
 import { api } from '../../services/api'
-import type { LiveTrade } from '../../types'
+import type { LiveTrade, LegFill } from '../../types'
 
 export function LiveTrades() {
   const [trades, setTrades] = useState<LiveTrade[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'completed' | 'partial' | 'failed'>('all')
+  const [expandedTradeId, setExpandedTradeId] = useState<number | null>(null)
 
   const fetchTrades = useCallback(async () => {
     try {
@@ -70,6 +71,53 @@ export function LiveTrades() {
     )
   }
 
+  const toggleExpanded = (tradeId: number) => {
+    setExpandedTradeId(expandedTradeId === tradeId ? null : tradeId)
+  }
+
+  const hasLegData = (trade: LiveTrade) => {
+    return trade.leg_fills && trade.leg_fills.length > 0
+  }
+
+  const renderLegBreakdown = (legFills: LegFill[]) => {
+    return (
+      <div className="px-4 py-3 bg-bg-secondary border-t border-border/30">
+        <div className="text-xs text-text-muted mb-2 font-medium">Leg Execution Breakdown</div>
+        <div className="grid gap-2">
+          {legFills.map((leg, idx) => (
+            <div
+              key={idx}
+              className="flex items-center justify-between py-1.5 px-3 bg-bg-tertiary rounded text-xs"
+            >
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-text-muted w-8">L{leg.leg}</span>
+                <span className="font-mono">{leg.pair}</span>
+                <Badge variant={leg.side === 'BUY' ? 'success' : 'danger'} className="text-xs">
+                  {leg.side}
+                </Badge>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className={`font-mono ${leg.success ? 'text-accent-success' : 'text-accent-danger'}`}>
+                  {leg.duration_ms}ms
+                </span>
+                {leg.success ? (
+                  <span className="text-accent-success">OK</span>
+                ) : (
+                  <span className="text-accent-danger" title={leg.error || 'Failed'}>
+                    FAIL
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 text-xs text-text-muted text-right">
+          Total: {legFills.reduce((sum, leg) => sum + leg.duration_ms, 0)}ms
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
       <Card className="animate-pulse">
@@ -116,26 +164,47 @@ export function LiveTrades() {
             </thead>
             <tbody className="text-sm">
               {trades.map((trade) => (
-                <tr key={trade.id} className="border-b border-border/50 hover:bg-bg-tertiary/50">
-                  <td className="py-3 text-text-secondary">
-                    {formatTime(trade.created_at)}
-                  </td>
-                  <td className="py-3 font-mono text-xs">
-                    {trade.path}
-                  </td>
-                  <td className="py-3">
-                    {getStatusBadge(trade.status)}
-                  </td>
-                  <td className="py-3 text-right">
-                    ${trade.amount_in.toFixed(2)}
-                  </td>
-                  <td className="py-3 text-right">
-                    {formatProfitLoss(trade)}
-                  </td>
-                  <td className="py-3 text-right text-text-secondary">
-                    {trade.total_execution_ms ? `${trade.total_execution_ms.toFixed(0)}ms` : '-'}
-                  </td>
-                </tr>
+                <Fragment key={trade.id}>
+                  <tr
+                    className={`border-b border-border/50 hover:bg-bg-tertiary/50 ${
+                      hasLegData(trade) ? 'cursor-pointer' : ''
+                    } ${expandedTradeId === trade.id ? 'bg-bg-tertiary/30' : ''}`}
+                    onClick={() => hasLegData(trade) && toggleExpanded(trade.id)}
+                  >
+                    <td className="py-3 text-text-secondary">
+                      <div className="flex items-center gap-2">
+                        {hasLegData(trade) && (
+                          <span className="text-text-muted text-xs">
+                            {expandedTradeId === trade.id ? '[-]' : '[+]'}
+                          </span>
+                        )}
+                        {formatTime(trade.created_at)}
+                      </div>
+                    </td>
+                    <td className="py-3 font-mono text-xs">
+                      {trade.path}
+                    </td>
+                    <td className="py-3">
+                      {getStatusBadge(trade.status)}
+                    </td>
+                    <td className="py-3 text-right">
+                      ${trade.amount_in.toFixed(2)}
+                    </td>
+                    <td className="py-3 text-right">
+                      {formatProfitLoss(trade)}
+                    </td>
+                    <td className="py-3 text-right text-text-secondary">
+                      {trade.total_execution_ms ? `${trade.total_execution_ms.toFixed(0)}ms` : '-'}
+                    </td>
+                  </tr>
+                  {expandedTradeId === trade.id && trade.leg_fills && (
+                    <tr>
+                      <td colSpan={6} className="p-0">
+                        {renderLegBreakdown(trade.leg_fills)}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

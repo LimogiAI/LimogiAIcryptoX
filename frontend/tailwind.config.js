@@ -1,29 +1,31 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
         bg: {
-          primary: '#0a0a0f',
-          secondary: '#12121a',
-          tertiary: '#1a1a24',
+          primary: 'var(--color-bg-primary)',
+          secondary: 'var(--color-bg-secondary)',
+          tertiary: 'var(--color-bg-tertiary)',
         },
         accent: {
-          primary: '#6366f1',
-          secondary: '#8b5cf6',
-          success: '#10b981',
-          warning: '#f59e0b',
-          danger: '#ef4444',
+          primary: 'var(--color-accent-primary)',
+          secondary: 'var(--color-accent-secondary)',
+          success: 'var(--color-accent-success)',
+          warning: 'var(--color-accent-warning)',
+          danger: 'var(--color-accent-danger)',
+          info: 'var(--color-accent-info)',
         },
         text: {
-          primary: '#f8fafc',
-          secondary: '#94a3b8',
-          muted: '#64748b',
+          primary: 'var(--color-text-primary)',
+          secondary: 'var(--color-text-secondary)',
+          muted: 'var(--color-text-muted)',
         },
         border: {
-          DEFAULT: '#2a2a3a',
-          light: '#3a3a4a',
+          DEFAULT: 'var(--color-border)',
+          light: 'var(--color-border-light)',
         },
       },
       fontFamily: {

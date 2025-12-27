@@ -11,7 +11,8 @@
     "WETH",
     "WBTC",
     "WAXL",
-    "PAXG"
+    "PAXG",
+    "XMR"
   ],
   "allowed_specified_assets": [
     "BTC",

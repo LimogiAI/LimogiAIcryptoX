@@ -6,9 +6,10 @@ import type { ConfigurationStatus, FeeConfigStatus, RestrictionsConfig } from '.
 interface Props {
   configStatus: ConfigurationStatus | null
   onConfigured: () => void
+  isTradingEnabled?: boolean
 }
 
-export function SetupDashboard({ configStatus, onConfigured }: Props) {
+export function SetupDashboard({ configStatus, onConfigured, isTradingEnabled = false }: Props) {
   const [config, setConfig] = useState({
     base_currency: configStatus?.config_summary?.start_currency || '',
     trade_amount: configStatus?.config_summary?.trade_amount?.toString() || '',
@@ -261,6 +262,23 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
         </p>
       </div>
 
+      {/* Trading Active Warning */}
+      {isTradingEnabled && (
+        <div className="mb-6 p-4 bg-accent-warning/10 border border-accent-warning/30 rounded-lg flex items-center gap-3">
+          <div className="flex-shrink-0 w-10 h-10 bg-accent-warning/20 rounded-full flex items-center justify-center">
+            <svg className="w-5 h-5 text-accent-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <div>
+            <h4 className="font-medium text-accent-warning">Trading is Active</h4>
+            <p className="text-sm text-text-secondary">
+              Settings are locked while trading is running. Stop trading from the dashboard to modify settings.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Configuration Cards */}
       <div className="space-y-6">
         {/* Start Currency Card */}
@@ -308,11 +326,12 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                     <button
                       key={currency}
                       onClick={() => toggleCurrency(currency)}
+                      disabled={isTradingEnabled}
                       className={`px-4 py-2 rounded-lg font-medium transition-all ${
                         selectedCurrencies.includes(currency)
                           ? 'bg-accent-primary text-white'
                           : 'bg-bg-tertiary text-text-secondary hover:bg-bg-tertiary/80 border border-border'
-                      }`}
+                      } ${isTradingEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       {currency}
                       {selectedCurrencies.includes(currency) && (
@@ -327,8 +346,9 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                   <Input
                     placeholder="Add other currency (e.g., USDT)"
                     className="flex-1"
+                    disabled={isTradingEnabled}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      if (e.key === 'Enter' && !isTradingEnabled) {
                         addCustomCurrency((e.target as HTMLInputElement).value);
                         (e.target as HTMLInputElement).value = '';
                       }
@@ -337,6 +357,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                   <Button
                     variant="outline"
                     size="sm"
+                    disabled={isTradingEnabled}
                     onClick={(e) => {
                       const input = (e.target as HTMLElement).parentElement?.querySelector('input');
                       if (input) {
@@ -372,6 +393,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
             value={config.trade_amount}
             onChange={(e) => setConfig(c => ({ ...c, trade_amount: e.target.value }))}
             prefix="$"
+            disabled={isTradingEnabled}
           />
           <p className="text-sm text-text-muted mt-3">
             Recommended: $20 - $100 for testing
@@ -391,6 +413,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
             value={config.min_profit_threshold}
             onChange={(e) => setConfig(c => ({ ...c, min_profit_threshold: e.target.value }))}
             suffix="%"
+            disabled={isTradingEnabled}
           />
           <p className="text-sm text-text-muted mt-3">
             Recommended: 0.10% - 0.30%. Use negative values to test execution with losses.
@@ -417,6 +440,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
               value={config.max_daily_loss}
               onChange={(e) => setConfig(c => ({ ...c, max_daily_loss: e.target.value }))}
               prefix="$"
+              disabled={isTradingEnabled}
             />
             <Input
               label="Total Loss Limit"
@@ -425,6 +449,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
               value={config.max_total_loss}
               onChange={(e) => setConfig(c => ({ ...c, max_total_loss: e.target.value }))}
               prefix="$"
+              disabled={isTradingEnabled}
             />
           </div>
           <p className="text-sm text-text-muted mt-3">
@@ -452,6 +477,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
               value={config.max_pairs}
               onChange={(e) => setConfig(c => ({ ...c, max_pairs: e.target.value }))}
               suffix="pairs"
+              disabled={isTradingEnabled}
             />
             <p className="text-xs text-text-muted -mt-2">
               Limits how many trading pairs to monitor (30-100 recommended)
@@ -464,6 +490,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
               value={config.min_volume_24h_usd}
               onChange={(e) => setConfig(c => ({ ...c, min_volume_24h_usd: e.target.value }))}
               prefix="$"
+              disabled={isTradingEnabled}
             />
             <p className="text-xs text-text-muted -mt-2">
               Pairs with less than this daily volume are excluded ($50,000+ recommended)
@@ -476,6 +503,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
               value={config.max_cost_min}
               onChange={(e) => setConfig(c => ({ ...c, max_cost_min: e.target.value }))}
               prefix="$"
+              disabled={isTradingEnabled}
             />
             <p className="text-xs text-text-muted -mt-2">
               Pairs requiring more than this minimum order are excluded ($20+ recommended)
@@ -522,6 +550,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                 size="sm"
                 onClick={handleFetchFees}
                 loading={fetchingFees}
+                disabled={isTradingEnabled}
                 className="w-full mt-2"
               >
                 Refresh Fees from Kraken
@@ -535,6 +564,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                     size="lg"
                     onClick={handleFetchFees}
                     loading={fetchingFees}
+                    disabled={isTradingEnabled}
                     fullWidth
                   >
                     {fetchingFees ? 'Fetching...' : 'Fetch Fees from Kraken'}
@@ -542,8 +572,9 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                   <div className="text-center text-sm text-text-muted">
                     or{' '}
                     <button
-                      className="text-accent-primary hover:underline"
-                      onClick={() => setShowManualFeeInput(true)}
+                      className={`text-accent-primary hover:underline ${isTradingEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      onClick={() => !isTradingEnabled && setShowManualFeeInput(true)}
+                      disabled={isTradingEnabled}
                     >
                       enter fees manually
                     </button>
@@ -560,6 +591,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                       value={manualFees.maker_fee}
                       onChange={(e) => setManualFees(f => ({ ...f, maker_fee: e.target.value }))}
                       suffix="%"
+                      disabled={isTradingEnabled}
                     />
                     <Input
                       label="Taker Fee"
@@ -569,6 +601,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                       value={manualFees.taker_fee}
                       onChange={(e) => setManualFees(f => ({ ...f, taker_fee: e.target.value }))}
                       suffix="%"
+                      disabled={isTradingEnabled}
                     />
                   </div>
                   <div className="flex gap-2">
@@ -585,6 +618,7 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                     <Button
                       onClick={handleManualFeeSubmit}
                       loading={fetchingFees}
+                      disabled={isTradingEnabled}
                       className="flex-1"
                     >
                       Save Fees
@@ -635,8 +669,9 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                       {currency}
                       <button
                         onClick={() => handleRemoveBlockedCurrency(currency)}
-                        className="ml-1 hover:bg-accent-danger/20 rounded p-0.5 transition-colors"
-                        title="Remove restriction"
+                        disabled={isTradingEnabled}
+                        className={`ml-1 hover:bg-accent-danger/20 rounded p-0.5 transition-colors ${isTradingEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title={isTradingEnabled ? "Cannot modify while trading" : "Remove restriction"}
                       >
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -654,13 +689,14 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
                   value={newBlockedCurrency}
                   onChange={(e) => setNewBlockedCurrency(e.target.value.toUpperCase())}
                   className="flex-1"
+                  disabled={isTradingEnabled}
                 />
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleAddBlockedCurrency}
                   loading={addingCurrency}
-                  disabled={!newBlockedCurrency.trim()}
+                  disabled={!newBlockedCurrency.trim() || isTradingEnabled}
                 >
                   Add
                 </Button>
@@ -730,9 +766,9 @@ export function SetupDashboard({ configStatus, onConfigured }: Props) {
           fullWidth
           onClick={handleSave}
           loading={saving}
-          disabled={!isFormValid()}
+          disabled={!isFormValid() || isTradingEnabled}
         >
-          {saving ? 'Saving...' : 'Save Configuration & Continue'}
+          {isTradingEnabled ? 'Settings Locked While Trading' : saving ? 'Saving...' : 'Save Configuration & Continue'}
         </Button>
       </div>
 
