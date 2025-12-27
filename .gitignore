@@ -1,8 +1,11 @@
-# Environment
+# Environment (NEVER commit these - contain API keys)
 .env
 *.env.local
 .env.kraken
 .env.live
+backend/.env
+frontend/.env
+!*.env.example
 
 # Python
 __pycache__/
