@@ -29,15 +29,17 @@ services:
   # ==========================================
   backend:
     build:
-      context: ./rust_backend
+      context: ./backend
       dockerfile: Dockerfile
     container_name: limogiaicryptox-backend
+    env_file:
+      - ./backend/.env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-krakencryptox}:${POSTGRES_PASSWORD:-krakencryptox123}@db:5432/${POSTGRES_DB:-krakencryptox}
-      - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
-      - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
       - RUST_LOG=info
       - PORT=8000
+    volumes:
+      - ./backend/config:/app/config
     ports:
       - "8000:8000"
     depends_on:

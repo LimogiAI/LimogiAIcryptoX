@@ -1,0 +1,29 @@
+{
+  "version": "1.0",
+  "jurisdiction": "CA",
+  "jurisdiction_name": "Canada",
+  "last_updated": "2025-12-27T05:14:10.161931222+00:00",
+  "update_source": "manual_add",
+  "regulatory_body": "CSA/OSC",
+  "blocked_base_currencies": [
+    "USDT",
+    "DAI",
+    "WETH",
+    "WBTC",
+    "WAXL",
+    "PAXG"
+  ],
+  "allowed_specified_assets": [
+    "BTC",
+    "ETH",
+    "BCH",
+    "LTC",
+    "USDC"
+  ],
+  "blocked_pairs": [],
+  "notes": "CSA views stablecoins and wrapped tokens as securities. These assets were delisted on Kraken Canada as of November 30, 2023.",
+  "sources": [
+    "https://support.kraken.com/articles/trading-suspension-in-canada-for-usdt-dai-weth-wbtc-and-waxl",
+    "https://www.osc.ca/en/securities-law/instruments-rules-policies/3/33-757"
+  ]
+}

@@ -1,0 +1,14 @@
+/Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/deps/serde-320190d5c1795704.d: /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/build/serde-2dc401cb86edc571/out/private.rs
+
+/Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/deps/libserde-320190d5c1795704.rlib: /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/build/serde-2dc401cb86edc571/out/private.rs
+
+/Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/deps/libserde-320190d5c1795704.rmeta: /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/build/serde-2dc401cb86edc571/out/private.rs
+
+/Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/nas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/build/serde-2dc401cb86edc571/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/nas/WebstormProjects/ai-playground/LimogiAIcryptoX/rust_backend/target/release/build/serde-2dc401cb86edc571/out
