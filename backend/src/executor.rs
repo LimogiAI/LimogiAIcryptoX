@@ -627,11 +627,13 @@ impl ExecutionEngine {
         }
         
         let total_duration = start_time.elapsed().as_millis() as u64;
-        let profit_amount = current_amount - start_amount;
+        // Deduct total fees (in USD equivalent) from profit calculation
+        // This gives us the NET profit after all trading fees
+        let profit_amount = current_amount - start_amount - total_fees;
         let profit_pct = (profit_amount / start_amount) * 100.0;
-        
-        info!("Trade {} completed: ${:.2} -> ${:.2} ({:+.2}%) in {}ms",
-            trade_id, start_amount, current_amount, profit_pct, total_duration);
+
+        info!("Trade {} completed: ${:.2} -> ${:.2} (fees: ${:.4}) = net {:+.4}% in {}ms",
+            trade_id, start_amount, current_amount, total_fees, profit_pct, total_duration);
         
         Ok(TradeResult {
             id: trade_id,
@@ -725,7 +727,8 @@ impl ExecutionEngine {
                 info!("Single leg completed: {} {} | in={:.8} out={:.8} | price={:.6} fee={:.6}",
                       side, pair, amount, output_amount, response.avg_price, response.fee);
 
-                let profit_amount = output_amount - amount;
+                // Deduct fee from profit calculation
+                let profit_amount = output_amount - amount - response.fee;
                 let profit_pct = if amount > 0.0 { (profit_amount / amount) * 100.0 } else { 0.0 };
 
                 let leg_result = LegResult {

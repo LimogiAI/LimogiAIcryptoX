@@ -210,6 +210,30 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
+// Account Positions & Balances
+export interface Position {
+  currency: string;
+  balance: number;
+  usd_value: number | null;
+}
+
+export interface AccountBalances {
+  usd: number;
+  eur: number;
+  eur_in_usd: number;
+  total_usd: number;
+  eur_usd_rate: number;
+}
+
+export interface PositionsResponse {
+  success: boolean;
+  connected: boolean;
+  balances: AccountBalances;
+  fetched_at: string;
+  positions: Position[];
+  error?: string;
+}
+
 // Geographic Restrictions
 export interface RestrictionsConfig {
   version: string;

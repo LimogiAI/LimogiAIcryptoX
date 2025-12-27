@@ -1,6 +1,7 @@
 import { TradingControls } from './TradingControls'
 import { LiveTrades } from './LiveTrades'
 import { PartialTrades } from './PartialTrades'
+import { AccountBalance } from './AccountBalance'
 
 interface Props {
   onTradingStatusChange?: () => void
@@ -10,6 +11,9 @@ export function TradingDashboard({ onTradingStatusChange }: Props) {
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
       <div className="space-y-6">
+        {/* Kraken Account Balance */}
+        <AccountBalance />
+
         {/* Partial Trades Warning (shows only if there are partial trades) */}
         <PartialTrades />
 

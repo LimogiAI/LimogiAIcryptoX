@@ -11,6 +11,7 @@ import type {
   KrakenFees,
   ConfigUpdate,
   RestrictionsConfig,
+  PositionsResponse,
 } from '../types'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -92,6 +93,12 @@ export const api = {
 
   async getLiveStatus(): Promise<{ config: LiveConfig; state: LiveState }> {
     const response = await client.get('/api/live/status')
+    return response.data
+  },
+
+  // ==================== ACCOUNT POSITIONS ====================
+  async getPositions(): Promise<PositionsResponse> {
+    const response = await client.get('/api/live/positions')
     return response.data
   },
 

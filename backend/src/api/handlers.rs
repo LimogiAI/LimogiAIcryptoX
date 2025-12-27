@@ -899,24 +899,57 @@ pub async fn get_positions(
 ) -> Response {
     match state.engine.get_positions().await {
         Ok(positions) => {
-            // Calculate total USD value if we have price data
+            // Extract quote currency balances (USD, EUR)
+            let mut usd_balance = 0.0;
+            let mut eur_balance = 0.0;
             let mut total_usd = 0.0;
+
+            // Get EUR/USD rate for conversion
+            let eur_usd_rate = state.engine.get_price("EUR/USD").unwrap_or(1.05);
+
             for pos in &positions {
-                if pos.currency == "USD" || pos.currency == "USDT" || pos.currency == "USDC" {
-                    total_usd += pos.balance;
-                } else {
-                    // Try to get USD price for this currency
-                    let pair = format!("{}/USD", pos.currency);
-                    if let Some(price) = state.engine.get_price(&pair) {
-                        total_usd += pos.balance * price;
+                match pos.currency.as_str() {
+                    "USD" | "ZUSD" => {
+                        usd_balance += pos.balance;
+                        total_usd += pos.balance;
+                    },
+                    "USDT" | "USDC" => {
+                        total_usd += pos.balance;
+                    },
+                    "EUR" | "ZEUR" => {
+                        eur_balance += pos.balance;
+                        total_usd += pos.balance * eur_usd_rate;
+                    },
+                    _ => {
+                        // Try to get USD price for this currency
+                        let pair = format!("{}/USD", pos.currency);
+                        if let Some(price) = state.engine.get_price(&pair) {
+                            total_usd += pos.balance * price;
+                        } else {
+                            // Try EUR pair and convert
+                            let eur_pair = format!("{}/EUR", pos.currency);
+                            if let Some(eur_price) = state.engine.get_price(&eur_pair) {
+                                total_usd += pos.balance * eur_price * eur_usd_rate;
+                            }
+                        }
                     }
                 }
             }
-            
+
+            // Format timestamp in ET
+            let fetched_at = format_datetime_et(Utc::now());
+
             Json(serde_json::json!({
                 "success": true,
                 "connected": true,
-                "total_usd": total_usd,
+                "balances": {
+                    "usd": usd_balance,
+                    "eur": eur_balance,
+                    "eur_in_usd": eur_balance * eur_usd_rate,
+                    "total_usd": total_usd,
+                    "eur_usd_rate": eur_usd_rate
+                },
+                "fetched_at": fetched_at,
                 "positions": positions
             })).into_response()
         },
@@ -926,6 +959,13 @@ pub async fn get_positions(
                 "success": false,
                 "connected": false,
                 "error": e.to_string(),
+                "balances": {
+                    "usd": 0.0,
+                    "eur": 0.0,
+                    "eur_in_usd": 0.0,
+                    "total_usd": 0.0,
+                    "eur_usd_rate": 0.0
+                },
                 "positions": []
             })).into_response()
         }
